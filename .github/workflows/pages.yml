@@ -4,9 +4,10 @@ name: Deploy static site to GitHub Pages
 # 1. 把仓库里的“站点文件”挑出来（排除 compiled/*.zo/*.dep 等构建产物）；
 # 2. 上传并发布到 GitHub Pages。
 
+# 默认只允许手动触发：Pages 尚未启用时不要在每次 push 后跑一个会失败的部署。
+# 以后想用：先在 Settings → Pages → Source 选 GitHub Actions，
+# 再把下面的 push 触发器加回来（或直接手动 Run workflow）。
 on:
-  push:
-    branches: [main, master]
   workflow_dispatch:
 
 permissions:
@@ -43,9 +44,6 @@ jobs:
           touch _site/.nojekyll
 
       - uses: actions/configure-pages@v5
-        with:
-          # 仓库第一次部署时自动启用 Pages（否则需要在 Settings 里手动切换来源）
-          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:
