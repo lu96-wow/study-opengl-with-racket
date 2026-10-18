@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>06 · 坐标系 — study-opengl</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/highlight.js" defer></script>
+</head>
+<body>
+<div class="page">
+
+  <header class="site-header">
+    <a class="site-title" href="../index.html">study-opengl</a>
+    <nav class="crumbs"><a href="../index.html">课程</a> / <span>06 · 坐标系</span></nav>
+  </header>
+
+  <div class="layout">
+    <main class="content">
+
+      <h1>坐标系</h1>
+
+      <p class="goal">本节目标：把立方体摆进一个真正的 3D 世界。用 model / view / projection 三个矩阵把顶点的局部坐标一路送到裁剪空间，并第一次打开深度缓冲。跑起来应该看到十个棋盘立方体散落在各处、各自绕 X 轴转，近的大远的、小的，遮挡关系正常。</p>
+
+      <div class="run"><span class="prompt">$</span> racket 06-coordinate-systems/coordinates.rkt</div>
+
+            <div class="note key">
+        <p><b>计算位置</b>model / view / proj 三个矩阵由 CPU 算好，GPU 顶点着色器执行 <code>proj · view · model · pos</code>。透视除法、裁剪、光栅化是 GPU 固定阶段，不归你写。</p>
+      </div>
+
+<h2 id="s6-1">6.1 三个空间</h2>
+
+      <p>顶点从"写在代码里的那个样子"到"屏幕上的一个像素"，中间要换好几套坐标系。每一套对应一个问题：这个坐标是谁的原点、谁的方向。</p>
+
+      <ul>
+        <li><b>局部坐标</b>——顶点在物体自己原点附近的样子。本课立方体就写在 <code>±0.5</code> 之间。</li>
+        <li><b>世界坐标</b>——把它摆进场景之后的位置。换这一步的是 <b>model</b> 矩阵，每个物体一个。</li>
+        <li><b>观察坐标</b>——把相机挪到原点、看向 -z 之后的位置。换这一步的是 <b>view</b> 矩阵，整场共用一份。</li>
+        <li><b>裁剪坐标</b>——把视锥压成标准立方体之后的位置。换这一步的是 <b>projection</b> 矩阵，整场共用一份。</li>
+      </ul>
+
+      <p>顶点着色器交给 <code>gl-position</code> 的就是裁剪坐标。之后的几步是 GPU 的固定管线：除以 w 得到 NDC，再映射到窗口像素。所以着色器里那行长乘法，写的就是这条流水线的前三段。</p>
+
+      <figure class="figure">
+        <svg viewBox="0 0 720 200" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>顶点从局部坐标出发，依次乘 model、view、projection 三个矩阵得到裁剪坐标，GPU 再做透视除法得到 NDC，最后映射到屏幕</title>
+          <defs>
+            <marker id="coord-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+            </marker>
+          </defs>
+
+          <rect x="60" y="24" width="84" height="40" rx="8" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="102" y="49" text-anchor="middle" font-size="14" fill="var(--fg)">局部坐标</text>
+
+          <line x1="144" y1="44" x2="229" y2="44" stroke="var(--line)" stroke-width="1.5" marker-end="url(#coord-arrow)"/>
+          <text x="188" y="78" text-anchor="middle" font-size="13" fill="var(--accent)">× u-model</text>
+
+          <rect x="232" y="24" width="84" height="40" rx="8" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="274" y="49" text-anchor="middle" font-size="14" fill="var(--fg)">世界坐标</text>
+
+          <line x1="316" y1="44" x2="401" y2="44" stroke="var(--line)" stroke-width="1.5" marker-end="url(#coord-arrow)"/>
+          <text x="360" y="78" text-anchor="middle" font-size="13" fill="var(--accent)">× u-view</text>
+
+          <rect x="404" y="24" width="84" height="40" rx="8" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="446" y="49" text-anchor="middle" font-size="14" fill="var(--fg)">观察坐标</text>
+
+          <line x1="488" y1="44" x2="573" y2="44" stroke="var(--line)" stroke-width="1.5" marker-end="url(#coord-arrow)"/>
+          <text x="532" y="78" text-anchor="middle" font-size="13" fill="var(--accent)">× u-proj</text>
+
+          <rect x="576" y="24" width="84" height="40" rx="8" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="618" y="49" text-anchor="middle" font-size="14" fill="var(--fg)">裁剪坐标</text>
+
+          <path d="M 618 64 V 88 H 342 V 109" fill="none" stroke="var(--line)" stroke-width="1.5" marker-end="url(#coord-arrow)"/>
+          <text x="480" y="104" text-anchor="middle" font-size="13" fill="var(--accent)">GPU 透视除法</text>
+
+          <rect x="300" y="112" width="84" height="40" rx="8" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="342" y="137" text-anchor="middle" font-size="14" fill="var(--fg)">NDC</text>
+
+          <line x1="384" y1="132" x2="553" y2="132" stroke="var(--line)" stroke-width="1.5" marker-end="url(#coord-arrow)"/>
+          <text x="470" y="164" text-anchor="middle" font-size="13" fill="var(--accent)">映射到窗口</text>
+
+          <rect x="556" y="112" width="104" height="40" rx="8" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="608" y="137" text-anchor="middle" font-size="14" fill="var(--fg)">屏幕像素</text>
+
+          <text x="400" y="190" text-anchor="middle" font-size="13" fill="var(--muted)">NDC：三个分量都在 -1..1 的标准立方体</text>
+        </svg>
+        <figcaption class="figcaption">图 6-1 顶点走完 model → view → projection，再由 GPU 送进屏幕</figcaption>
+      </figure>
+
+      <div class="note key">
+        <p><b>关键点</b>三个矩阵都是"换坐标系"，作用顺序从右往左：顶点先被 model 搬进世界，再被 view 搬进相机眼前，最后被 projection 压进标准立方体。</p>
+      </div>
+
+      <h2 id="s6-2">6.2 model：把物体摆进世界</h2>
+
+      <p><b>model</b> 矩阵管"这个物体摆在世界里的哪里、朝向如何、多大"。它正是 05 课学的那些平移 / 旋转 / 缩放的组合。</p>
+
+      <p>本课有十个立方体，但它们共用同一份顶点数据、同一个 VAO——区别只在每画一个之前换一次 <code>u-model</code>。乘法从右往左读：顶点先被 <code>m-rotate-x</code> 转起来（让它自己转），再被 <code>m-translate</code> 搬到 <code>pos</code>。</p>
+
+      <div class="code">
+        <div class="code-title">06-coordinate-systems/coordinates.rkt：循环里给每个立方体算 model<a class="srclink" href="../code.html?f=06-coordinate-systems/coordinates.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">  (for ([pos (in-list cube-positions)] [i (in-naturals)])
+    (define speed (+ 0.5 (* 0.3 i)))       ; 每个立方体转速不同，看得出是各自在转
+    (define model (mat4-mul (m-translate pos) (m-rotate-x (* t speed))))
+    (uniform-set! u-model-loc 'mat-4 model)
+    (gl-draw-elements gl-triangles 36 gl-unsigned-short 0))</code></pre>
+      </div>
+
+      <p>十个位置、十个矩阵、十次 <code>gl-draw-elements</code>，同一份几何就摆满了一个场景。转速 <code>speed</code> 随下标变化，是为了让各立方体转得不一样快，一眼能看出它们是各自独立的物体。</p>
+
+      <h2 id="s6-3">6.3 view：把世界搬到相机眼前</h2>
+
+      <p><b>view</b> 矩阵把世界坐标换成观察坐标：以相机为原点、相机看向 -z 的那套坐标系。所以要"移动相机"，数学上是反过来把整个世界搬一次——相机往哪边走，就等于世界往相反方向走。</p>
+
+      <p>本课偷懒：相机固定在原点看向 -z，于是 view 就只是一个平移，把世界沿 -z 推 3 米（等价于相机退到 z=+3 处）。真正的相机在 07 课，用 look-at 由 <code>eye</code> / <code>center</code> / <code>up</code> 算出这个矩阵，还能绕目标转圈。</p>
+
+      <div class="code">
+        <div class="code-title">06-coordinate-systems/coordinates.rkt：本课的 view 就是一个平移<a class="srclink" href="../code.html?f=06-coordinate-systems/coordinates.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">  ;; view：本课偷懒——相机就在原点看向 -z，于是把整个世界沿 -z 推 3 米即可
+  ;; （等价于相机退到 z=+3 处）。真正的相机在 07 课，用 look-at 由 eye/center/up 算。
+  (uniform-set! u-view-loc 'mat-4 (m-translate (vec-3 0.0 0.0 -3.0)))</code></pre>
+      </div>
+
+      <h2 id="s6-4">6.4 projection 与透视除法</h2>
+
+      <p>视锥是"相机能看到的那块空间"：一个从相机出发、越远越大的四棱锥，被近平面和远平面切掉两端之后剩下的梯形台。<b>projection</b> 的活儿就是把它压成 <code>x</code>、<code>y</code>、<code>z</code> 都在 -1..1 的标准立方体（NDC），GPU 再按窗口像素把它拉伸映射过去。</p>
+
+      <p>压的过程里藏着一个机关：<code>col2</code> 那个 <code>-1</code> 把观察空间的 <code>-z</code> 抄进了结果的 <code>w</code> 分量。于是 GPU 随后做"除以 w"时，除的正是距离——远的物体被除得多，自然变小。这就是透视除法，矩阵自己的注释说得最清楚：</p>
+
+      <div class="code">
+        <div class="code-title">lib/matrix.rkt：m-perspective<a class="srclink" href="../code.html?f=lib/matrix.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">;; 透视投影：把眼前的一个视锥压成标准立方体（NDC，x/y/z 都在 -1..1）。
+;; f 由竖直视场角 fovy 定；near 平面映射到 z=-1，far 平面映射到 z=+1。
+;; col2 的 -1 是"透视除法"的机关：它把观察空间的 -z 抄进 w，之后 GPU 除以 w，
+;; 远的物体自然变小；同时 z 被压成非线性（近处精度高、远处精度低）。
+(define (m-perspective fovy aspect near far)
+  (define f (/ 1.0 (tan (/ fovy 2.0))))
+  (define nf (- near far))
+  (mat-4 (vec-4 (/ f aspect) 0.0 0.0 0.0)
+        (vec-4 0.0 f 0.0 0.0)
+        (vec-4 0.0 0.0 (/ (+ far near) nf) -1.0)
+        (vec-4 0.0 0.0 (/ (* 2.0 far near) nf) 0.0)))</code></pre>
+      </div>
+
+      <p>注意 <code>z</code> 也被压成了非线性：近处精度高、远处精度低，这是同一套除法的副作用。本课调用它时给了四个参数——竖直视场角 45 度、aspect、near 0.1、far 100。fovy 定的是<em>竖直</em>方向张开多少，横向能看到多少则完全由 aspect 决定：aspect 必须等于窗口客户区的宽高比，否则 NDC 里那个正方形会被窗口拉伸成矩形，画面跟着变形。所以 aspect 不能写死，得跟着窗口客户区走：</p>
+
+      <div class="code">
+        <div class="code-title">06-coordinate-systems/coordinates.rkt：每帧上传 u-proj<a class="srclink" href="../code.html?f=06-coordinate-systems/coordinates.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">  ;; projection：竖直视场角 45°、aspect 取当前窗口宽高比（由 #:on-size 维护）、
+  ;; near 0.1、far 100。投影矩阵每帧重算，所以 aspect 一改，下一帧就生效。
+  (uniform-set! u-proj-loc 'mat-4 (m-perspective (degrees->radians 45.0)
+                                        aspect
+                                        0.1 100.0))</code></pre>
+      </div>
+
+      <p><code>aspect</code> 的初始值由 <code>win-w</code> / <code>win-h</code> 算出（也就是 800 : 600），可窗口一旦被拖动缩放，这个值就过时了——投影还按 800 : 600 去压，画面立刻横向或纵向拉伸。本课把这件事交给 <code>make-window</code> 的 <code>#:on-size</code> 兜住：lib 的 <code>on-size</code> 在窗口尺寸变化时先重设 viewport，紧接着把新的客户区宽高递给回调；回调拿着它改掉 <code>aspect</code>，而 <code>draw</code> 每帧都重算投影矩阵，于是下一帧的画面就已经合上新宽高比，立方体不变形。</p>
+
+      <div class="code">
+        <div class="code-title">06-coordinate-systems/coordinates.rkt：窗口缩放时同步 aspect<a class="srclink" href="../code.html?f=06-coordinate-systems/coordinates.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">(define-values (frame canvas)
+  (make-window #:title "06 坐标系"
+               #:width win-w
+               #:height win-h
+               #:init init
+               #:draw draw
+               ;; 窗口尺寸变化、viewport 重设之后被调用，参数是新的客户区宽高。
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))</code></pre>
+      </div>
+
+      <figure class="figure">
+        <svg viewBox="0 0 720 240" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>侧看视锥是一个梯形台，投影把它压成正方形的标准立方体 NDC；远处的坐标被 w 除得更多，于是向中心收缩</title>
+          <defs>
+            <marker id="frustum-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+            </marker>
+          </defs>
+
+          <text x="240" y="18" text-anchor="middle" font-size="13" fill="var(--muted)">视锥（相机能看到的那块空间），侧看</text>
+
+          <polygon points="70,130 140,90 350,30 350,230 140,170" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <circle cx="70" cy="130" r="4" fill="var(--accent)"/>
+          <text x="70" y="152" text-anchor="middle" font-size="13" fill="var(--fg)">相机</text>
+          <text x="146" y="84" font-size="13" fill="var(--accent)">near 平面</text>
+          <text x="356" y="26" font-size="13" fill="var(--accent)">far 平面</text>
+
+          <line x1="70" y1="130" x2="362" y2="130" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#frustum-arrow)"/>
+          <text x="230" y="148" text-anchor="middle" font-size="13" fill="var(--muted)">视线 -z</text>
+
+          <line x1="392" y1="130" x2="453" y2="130" stroke="var(--line)" stroke-width="1.5" marker-end="url(#frustum-arrow)"/>
+          <text x="422" y="118" text-anchor="middle" font-size="13" fill="var(--accent)">整体 ÷ w</text>
+
+          <rect x="480" y="45" width="160" height="160" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+          <text x="560" y="32" text-anchor="middle" font-size="13" fill="var(--muted)">标准立方体 NDC</text>
+          <text x="560" y="118" text-anchor="middle" font-size="13" fill="var(--fg)">(x, y, z) ∈ [-1, 1]</text>
+          <text x="560" y="144" text-anchor="middle" font-size="13" fill="var(--muted)">近处 z = -1，远处 z = +1</text>
+          <text x="560" y="228" text-anchor="middle" font-size="13" fill="var(--muted)">远的被除得更多，向中心收缩</text>
+        </svg>
+        <figcaption class="figcaption">图 6-2 视锥被压成标准立方体，远近的差别来自那次除以 w</figcaption>
+      </figure>
+
+      <h2 id="s6-5">6.5 深度缓冲第一次出现</h2>
+
+      <p>立方体一多，遮挡就成了问题。GPU 是照<em>绘制顺序</em>往像素上涂色的：默认规则就是后画的盖住先画的，跟谁远谁近毫无关系。十次 <code>gl-draw-elements</code> 画下来，画面会一团糟。</p>
+
+      <div class="note warn">
+        <p><b>坑</b>不开深度测试，立方体会看起来像一个个"敞开的盒子"：后画的背面盖住了前面的面，还能透过近处看到背后的东西。几何没算错，只是没有人在管"这两个片元谁离相机更近"。</p>
+      </div>
+
+      <p>深度缓冲就是这个"管的人"：每个像素额外记一个深度值，内容是目前画到的最浅的深度。新片元想往这个像素上涂色，先比一比——比记录的更远就直接丢弃。<code>gl-enable gl-depth-test</code> 打开的就是这套比较。</p>
+
+      <div class="code">
+        <div class="code-title">06-coordinate-systems/coordinates.rkt：init 里打开深度测试<a class="srclink" href="../code.html?f=06-coordinate-systems/coordinates.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">  ;; ---- 深度缓冲 ----
+  ;; 每个像素记住目前画到的最浅的深度；新片元比它更远就直接丢弃。
+  ;; 不开启的话，后画的片元无条件盖住先画的，遮挡和远近无关（见 6.5）。
+  (gl-enable gl-depth-test)</code></pre>
+      </div>
+
+      <p>清屏时也要多擦一块缓冲：只擦颜色的话，上一帧留下的深度会把这一帧的片元全判成"太远"。掩码这件事 01 课讲过——一个 bit 代表一块缓冲，按位或就是把两块一起擦：</p>
+
+      <div class="code">
+        <div class="code-title">06-coordinate-systems/coordinates.rkt：每帧把颜色和深度一起擦<a class="srclink" href="../code.html?f=06-coordinate-systems/coordinates.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">  ;; 清屏掩码：01 课见过掩码——一个 bit 代表一块缓冲。这里用按位或把颜色和深度
+  ;; 两块一起擦；只擦颜色的话，上一帧的深度还留着，这帧的遮挡就全错。
+  (gl-clear (bitwise-ior gl-color-buffer-bit gl-depth-buffer-bit))</code></pre>
+      </div>
+
+      <p>比法本身还是个旋钮。<code>gl-enable gl-depth-test</code> 只说"要比较"，拿新片元的深度和缓冲里已有的深度<em>怎么</em>比，由深度比较函数规定：OpenGL 里是 <code>glDepthFunc</code>（按本教程的命名规则写成 <code>gl-depth-func</code>，比较方式 <code>GL_LESS</code> / <code>GL_LEQUAL</code> 则对应 <code>gl-less</code> / <code>gl-lequal</code>）。默认值 <code>gl-less</code> 就是"新片元更近才写进去"，前面那句"更远的直接丢弃"正是它；也就是说，遮挡方向其实是这个旋钮给的，不是深度测试本身写死的。</p>
+
+      <p>同深度时有别的选择：<code>gl-lequal</code> 把"相等"也算作通过，让后画的片元赢。两个面完全共面时（典型场景是往墙上贴一张贴花），深度值几乎一样，浮点误差会让默认的 <code>gl-less</code> 一会儿判通过、一会儿判不通过，贴花和墙交替闪烁（z-fighting）；换成 <code>gl-lequal</code>，相等一律算过、后画的赢，贴花就稳稳盖在墙上。本课不改它、保持默认，但要知道这个旋钮在——这些名字现在都已收录（<code>gl-depth-func</code> / <code>gl-less</code> / <code>gl-lequal</code> 等），下面练习里可以直接动手。</p>
+
+      <figure class="figure">
+        <svg viewBox="0 0 720 240" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>两个前后重叠的方块：关掉深度时远的那块盖住近的，打开深度时近的那块挡住远的</title>
+
+          <text x="170" y="22" text-anchor="middle" font-size="13" fill="var(--fg)">关深度：后画的盖住先画的</text>
+          <text x="540" y="22" text-anchor="middle" font-size="13" fill="var(--fg)">开深度：近的挡住远的</text>
+
+          <rect x="80" y="60" width="120" height="120" fill="#e68c3c" stroke="var(--line)" stroke-width="1.5"/>
+          <rect x="140" y="40" width="120" height="120" fill="#284682" stroke="var(--line)" stroke-width="1.5"/>
+
+          <rect x="450" y="40" width="120" height="120" fill="#284682" stroke="var(--line)" stroke-width="1.5"/>
+          <rect x="390" y="60" width="120" height="120" fill="#e68c3c" stroke="var(--line)" stroke-width="1.5"/>
+
+          <text x="170" y="204" text-anchor="middle" font-size="13" fill="var(--muted)">重叠处是蓝色：远的（蓝）盖住了近的</text>
+          <text x="170" y="224" text-anchor="middle" font-size="13" fill="var(--muted)">谁后画谁在上面，跟远近无关</text>
+          <text x="540" y="204" text-anchor="middle" font-size="13" fill="var(--muted)">重叠处是橙色：近的（橙）挡住了远的</text>
+          <text x="540" y="224" text-anchor="middle" font-size="13" fill="var(--muted)">近的赢，跟先后无关</text>
+        </svg>
+        <figcaption class="figcaption">图 6-3 两个前后重叠的方块（橙 = 近处，蓝 = 远处）：深度测试开着才是对的遮挡</figcaption>
+      </figure>
+
+      <h3 id="s6-5-1">6.5.1 拓展：背面剔除</h3>
+
+      <p>深度测试解决的是"谁挡住谁"，但 GPU 仍然会为背面跑顶点/片元 shader。对闭合物体（立方体、球、角色模型）来说，背对相机的那些面永远看不见，可以直接在光栅化前丢掉——这叫<strong>背面剔除</strong>（face culling）。</p>
+
+      <p>剔除靠三角形的<strong>绕序</strong>（winding order）判断正反。OpenGL 默认把<strong>逆时针</strong>（CCW）的三角形当正面；本课的立方体数据已经按"从外面看是逆时针"排好。打开它只要两行：</p>
+
+      <div class="code">
+        <div class="code-title">06-coordinate-systems/coordinates.rkt：init 里打开背面剔除<a class="srclink" href="../code.html?f=06-coordinate-systems/coordinates.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">  ;; 闭合物体背对相机的面永远看不见，不必光栅化。
+  ;; 默认正面是逆时针（CCW），这里剔除背面。
+  (gl-enable var-cull-face)
+  (gl-cull-face gl-back)</code></pre>
+      </div>
+
+      <table class="spec">
+        <thead><tr><th>调用</th><th>作用</th></tr></thead>
+        <tbody>
+          <tr><td><code>(gl-enable var-cull-face)</code></td><td>打开剔除。常量是 <code>GL_CULL_FACE</code>，因为和函数 <code>glCullFace</code> 撞名，按命名约定写成 <code>var-cull-face</code></td></tr>
+          <tr><td><code>(gl-cull-face gl-back)</code></td><td>剔除背面；改成 <code>gl-front</code> 就剔除正面（看进物体内部时有用）</td></tr>
+          <tr><td><code>(gl-front-face gl-ccw)</code></td><td>规定逆时针为正面。这是默认值；改成 <code>gl-cw</code> 会让内外翻转</td></tr>
+        </tbody>
+      </table>
+
+      <div class="note warn">
+        <p><b>坑</b>绕序必须和 <code>gl-cull-face</code> 的约定一致，否则物体要么整个消失，要么内外翻转。两个面都需要的物体（billboard 文字、草片、布料）通常<strong>不</strong>开剔除，或者只对特定物体开关。深度测试已经保证遮挡正确，剔除主要是省掉看不见的三角形。</p>
+        <p>命名上也要小心：<code>gl-cull-face</code> 是<strong>函数</strong>（对应 <code>glCullFace</code>），<code>var-cull-face</code> 是<strong>常量</strong>（对应 <code>GL_CULL_FACE</code>）；<code>gl-enable</code> 要的是常量。</p>
+        <p>自己写顶点或从 OBJ 导入时，先确认绕序。OBJ 的 <code>f</code> 通常按"从外面看逆时针"给，但不同导出器可能不同；14 课加载模型后如果一开剔除就缺面，先回来检查这一点。</p>
+      </div>
+
+      <p><b>怎么判断一个面的绕序对不对</b>：对三角形 <code>(a, b, c)</code> 算叉乘 <code>(b-a) × (c-a)</code>，结果应该指向物体<strong>外面</strong>。叉乘的方向用右手定则：右手四指从 <code>b-a</code> 弯向 <code>c-a</code>，拇指指的那边就是结果方向。把它和外法线比，同向就是外向。</p>
+
+      <p>以正面为例（4、5、6 是 <code>vertex-data</code> 里正面的前三个角）：</p>
+
+      <p><code>(5-4) × (6-4) = (1,0,0) × (1,1,0) = (0,0,1)</code>，指向 +z；正面的外法线正好是 +z，所以 <code>4 5 6</code> 是对的。</p>
+
+      <p>后面如果照正面写成 <code>0 1 2</code>，算出来还是 <code>(0,0,1)</code>，但后面的外法线是 <code>-z</code>，方向反了；正确写法是 <code>0 3 2</code>。右面和顶面也是同样的坑：照着左面/底面的顺序套，叉乘就会指向物体里面。</p>
+
+      <table class="spec">
+        <thead><tr><th>面</th><th>外法线</th><th>正确索引（两个三角形）</th><th>最容易写成的错误版本</th></tr></thead>
+        <tbody>
+          <tr><td>后面</td><td><code>-z</code></td><td><code>0 3 2</code> / <code>2 1 0</code></td><td><code>0 1 2</code> / <code>2 3 0</code>（照前面套）</td></tr>
+          <tr><td>前面</td><td><code>+z</code></td><td><code>4 5 6</code> / <code>6 7 4</code></td><td>—</td></tr>
+          <tr><td>左面</td><td><code>-x</code></td><td><code>8 9 10</code> / <code>10 11 8</code></td><td>—</td></tr>
+          <tr><td>右面</td><td><code>+x</code></td><td><code>12 14 13</code> / <code>14 12 15</code></td><td><code>12 13 14</code> / <code>14 15 12</code>（照左面套）</td></tr>
+          <tr><td>底面</td><td><code>-y</code></td><td><code>16 17 18</code> / <code>18 19 16</code></td><td>—</td></tr>
+          <tr><td>顶面</td><td><code>+y</code></td><td><code>20 22 21</code> / <code>22 20 23</code></td><td><code>20 21 22</code> / <code>22 23 20</code>（照底面套）</td></tr>
+        </tbody>
+      </table>
+
+      <p>看出规律没有：后面/右面/顶面如果照着前面/左面/底面的顶点顺序套，叉乘会分别指向 <code>+z</code>、<code>-x</code>、<code>-y</code>，正好和它们的外法线 <code>-z</code>、<code>+x</code>、<code>+y</code> 相反。把每个三角形的后两个索引对调，内向就变外向。</p>
+
+      <p>实际调试不用每次手算：打开剔除，让相机绕物体转一圈；哪个面从外面看不见，就把那个面两个三角形的第 2、3 个索引对调。再转一圈确认。反过来，如果看到的是物体内壁，说明整个物体的绕序都反了，应该改 <code>gl-front-face</code>，而不是逐个面翻。</p>
+
+      <p>本课把它打开了。你可以做个实验：把右面从 <code>12 14 13</code> / <code>14 12 15</code> 改回 <code>12 13 14</code> / <code>14 15 12</code>，右面会立刻消失；改回来又出现。再把 <code>(gl-front-face gl-ccw)</code> 改成 <code>(gl-front-face gl-cw)</code>，整个立方体会变成“里朝外”；改回来又恢复。</p>
+
+      <h2 id="s6-6">6.6 立方体的顶点数据</h2>
+
+      <p>立方体看着只要 8 个顶点，本课却用了 24 个。原因在 UV：8 个角每个都被 3 个面共用，而同一个角在三个面上要的 UV 各不相同（每个面都得把它那 0..1 铺满）。一个顶点只能带一对 UV，于是每个面自己摊一份 4 个顶点：</p>
+
+      <div class="code">
+        <div class="code-title">06-coordinate-systems/coordinates.rkt：为什么是 24 个顶点<a class="srclink" href="../code.html?f=06-coordinate-systems/coordinates.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">;; 为什么是 24 个顶点而不是 8 个：立方体确有 8 个角，但每个角被 3 个面共用，
+;; 而同一个角在三个面上需要的 UV 各不相同（每个面都要把 0..1 铺满）。
+;; 一个顶点只能带一对 UV，所以每个面得自己摊一份 4 个顶点：6 面 × 4 = 24。
+;; 法向是同样的道理（07 之后才会用到），本课只说 UV。
+;; 布局：位置 vec-3 + UV vec-2 交错
+;;    x  y  z  u  v | x  y  z  u  v | …
+(define vertex-data
+  (concat-vecs (vec-3 -0.5 -0.5 -0.5) (vec-2 0.0 0.0)     ; 后面 4 个角
+               (vec-3  0.5 -0.5 -0.5) (vec-2 1.0 0.0)
+               (vec-3  0.5  0.5 -0.5) (vec-2 1.0 1.0)
+               (vec-3 -0.5  0.5 -0.5) (vec-2 0.0 1.0)</code></pre>
+      </div>
+
+      <p>索引那边同样是 6 的倍数：每个面两个三角形、六个下标，六个面一共 36 个。24 个顶点互不共用，索引就是顺着往下数：</p>
+
+      <div class="code">
+        <div class="code-title">06-coordinate-systems/coordinates.rkt：36 个索引<a class="srclink" href="../code.html?f=06-coordinate-systems/coordinates.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">;; 每个面两个三角形。24 个顶点两两不共用，索引就是顺序往下数：
+;; 6 面 × 6 个下标 = 36。
+;; ★ 绕序：从物体外面看，每个三角形都必须是逆时针（CCW），否则打开
+;;   背面剔除时这个面会消失。后面/右面/顶面最容易照前面/左面/底面写反；
+;;   判断、手算和修正方法见教程 6.5.1。
+(define indices
+  (u16-array 0 3 2   2 1 0        ; 后面
+             4 5 6   6 7 4        ; 前面
+             8 9 10  10 11 8      ; 左面
+             12 14 13  14 12 15   ; 右面
+             16 17 18  18 19 16   ; 底面
+             20 22 21  22 20 23)) ; 顶面</code></pre>
+      </div>
+
+      <p>顶点属性的布局和 03、04 课一模一样，只是位置从 <code>vec-2</code> 换成了 <code>vec-3</code>。步长和偏移照样从布局算出来，不写字面量：</p>
+
+      <div class="code">
+        <div class="code-title">06-coordinate-systems/coordinates.rkt：vec-3 + vec-2 的步长与偏移<a class="srclink" href="../code.html?f=06-coordinate-systems/coordinates.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">  ;; 步长和偏移都从布局算出来，不写字面量：vec-3 + vec-2 = 5 个 float = 20 字节，
+  ;; UV 前面要跳过位置那 3 个 float = 12 字节。
+  (define stride (shader-stride-bytes 'vec-3 'vec-2))
+  (define uv-offset (shader-byte-size 'vec-3))
+  (gl-vertex-attrib-pointer 0 3 gl-float #f stride 0)
+  (gl-enable-vertex-attrib-array 0)
+  (gl-vertex-attrib-pointer 1 2 gl-float #f stride uv-offset)
+  (gl-enable-vertex-attrib-array 1)</code></pre>
+      </div>
+
+      <figure class="figure">
+        <svg viewBox="0 0 720 240" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>立方体有 6 个面、每个面 4 个顶点共 24 个顶点；每个面两个三角形共 6 个下标，6 个面合计 36 个下标</title>
+          <defs>
+            <marker id="cube-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+            </marker>
+          </defs>
+
+          <rect x="60" y="110" width="110" height="100" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <polygon points="60,110 105,75 215,75 170,110" fill="var(--accent-soft)" stroke="var(--line)" stroke-width="1.5"/>
+          <polygon points="170,110 215,75 215,175 170,210" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="137" y="234" text-anchor="middle" font-size="13" fill="var(--fg)">6 个面 × 4 顶点 = 24 个顶点</text>
+
+          <line x1="240" y1="140" x2="292" y2="140" stroke="var(--line)" stroke-width="1.5" marker-end="url(#cube-arrow)"/>
+          <text x="272" y="126" text-anchor="middle" font-size="13" fill="var(--muted)">每个面摊一份</text>
+
+          <polygon points="430,60 560,60 560,150" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <polygon points="560,150 430,150 430,60" fill="none" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="4 3"/>
+          <circle cx="430" cy="60" r="3.5" fill="var(--accent)"/>
+          <circle cx="560" cy="60" r="3.5" fill="var(--accent)"/>
+          <circle cx="560" cy="150" r="3.5" fill="var(--accent)"/>
+          <circle cx="430" cy="150" r="3.5" fill="var(--accent)"/>
+          <text x="422" y="56" text-anchor="end" font-size="14" fill="var(--fg)">0</text>
+          <text x="568" y="56" font-size="14" fill="var(--fg)">1</text>
+          <text x="568" y="156" font-size="14" fill="var(--fg)">2</text>
+          <text x="422" y="156" text-anchor="end" font-size="14" fill="var(--fg)">3</text>
+
+          <text x="495" y="190" text-anchor="middle" font-size="13" fill="var(--fg)">一个面 = 0 1 2 + 2 3 0</text>
+          <text x="495" y="210" text-anchor="middle" font-size="13" fill="var(--muted)">两个三角形，6 个下标</text>
+          <text x="495" y="234" text-anchor="middle" font-size="13" fill="var(--accent)">6 面 × 6 下标 = 36</text>
+        </svg>
+        <figcaption class="figcaption">图 6-4 24 个顶点来自"每面各摊 4 个"，36 个索引来自"每面 6 个下标"</figcaption>
+      </figure>
+
+      <h2 id="s6-code">完整代码</h2>
+
+      <p><a class="filelink" href="../code.html?f=06-coordinate-systems/coordinates.rkt">06-coordinate-systems/coordinates.rkt</a>，本课全部代码（直接 <code>racket</code> 跑）：</p>
+
+      <div class="code">
+        <div class="code-title">06-coordinate-systems/coordinates.rkt<a class="srclink" href="../code.html?f=06-coordinate-systems/coordinates.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">#lang glsl-opengl
+;; ============================================================
+;; 06 · 坐标系：model / view / projection 三个矩阵
+;; 运行：racket 06-coordinate-systems/coordinates.rkt
+;; 上一课：05-transformations/transform.rkt
+;; ============================================================
+;; 目标：把立方体摆进一个 3D 世界。这件事拆成三段：
+;;   ① model      把物体的局部坐标摆到世界里的某个位置、朝向
+;;   ② view       把整个世界搬成"相机在原点、看向 -z"的样子
+;;   ③ projection 把眼前那个视锥压成标准立方体，并让远的物体变小
+;; 乘起来的顺序从右往左作用：顶点先被 model 搬，再被 view 搬，最后被 proj 压。
+;; 这一课还第一次开深度缓冲，否则后画的立方体会盖住先画的、跟远近无关。
+
+(require racket/class
+         racket/gui
+         racket/math
+         "../lib/window.rkt"
+         "../lib/matrix.rkt")
+
+;; ------------------------------------------------------------
+;; 窗口尺寸：做成常量
+;; ------------------------------------------------------------
+;; 投影要一个 aspect = 宽/高，它必须和实际窗口同源，否则画面会横向或纵向拉伸。
+(define win-w 800)
+(define win-h 600)
+
+;; aspect 的初始值；窗口缩放时由 #:on-size 更新。
+;; lib/window.rkt 的 #:on-size 在窗口尺寸变化、viewport 重设之后被调用，参数就是新的
+;; 客户区宽高；下面把它交给一个改 aspect 的回调，draw 下一帧重算投影就不变形了。
+(define aspect (/ win-w win-h))
+
+;; ------------------------------------------------------------
+;; 一、生成纹理像素（同 04 课）
+;; ------------------------------------------------------------
+;; 出处：04-textures/textures.rkt 的 make-checker-texture。棋盘是本教程的惯用图案：
+;; 贴对了是一格一格的方块，UV 错了或采样错了立刻看得出来。
+(define tex-size 64)
+(define tex-cell 8)
+
+(define (make-checker-texture size cell)
+  (define px (make-u8-array (* size size 4) 255))
+  (for* ([y (in-range size)] [x (in-range size)])
+    (define on? (even? (+ (quotient x cell) (quotient y cell))))
+    (define i (* (+ (* y size) x) 4))
+    (define r (if on? 230 40))
+    (define g (if on? 140 70))
+    (define b (if on? 60 130))
+    (u8-array-set! px i r)
+    (u8-array-set! px (+ i 1) g)
+    (u8-array-set! px (+ i 2) b)
+    (u8-array-set! px (+ i 3) 255))          ; alpha 不透明
+  px)
+
+;; ------------------------------------------------------------
+;; 二、着色器：三个矩阵挨个乘上去
+;; ------------------------------------------------------------
+;; 一路都在 4x4 矩阵里算，顶点是 vec-4（第 4 个分量 w 恒为 1）。
+;; 乘的顺序：model 最靠里（最先作用在顶点上），proj 最靠外。
+(define vert-src
+  (glsl (version 330 core)
+        (layout (location 0) in vec-3 a-pos)     ; 属性 0：局部坐标
+        (layout (location 1) in vec-2 a-uv)      ; 属性 1：UV 坐标
+        (uniform mat-4 u-model)                  ; 局部 → 世界
+        (uniform mat-4 u-view)                   ; 世界 → 观察
+        (uniform mat-4 u-proj)                   ; 观察 → 裁剪
+        (out vec-2 v-uv)
+        (define (main) void
+          (set! gl-position (* u-proj (* u-view (* u-model (vec-4 a-pos 1.0)))))
+          (set! v-uv a-uv))))
+
+(define frag-src
+  (glsl (version 330 core)
+        (in vec-2 v-uv)
+        (uniform sampler-2d u-tex)               ; 采样器：指向某张纹理
+        (out vec-4 frag-color)
+        (define (main) void
+          (set! frag-color (texture u-tex v-uv)))))
+
+;; ------------------------------------------------------------
+;; 三、立方体数据：24 个顶点 + 36 个索引
+;; ------------------------------------------------------------
+;; 为什么是 24 个顶点而不是 8 个：立方体确有 8 个角，但每个角被 3 个面共用，
+;; 而同一个角在三个面上需要的 UV 各不相同（每个面都要把 0..1 铺满）。
+;; 一个顶点只能带一对 UV，所以每个面得自己摊一份 4 个顶点：6 面 × 4 = 24。
+;; 法向是同样的道理（07 之后才会用到），本课只说 UV。
+;; 布局：位置 vec-3 + UV vec-2 交错
+;;    x  y  z  u  v | x  y  z  u  v | …
+(define vertex-data
+  (concat-vecs (vec-3 -0.5 -0.5 -0.5) (vec-2 0.0 0.0)     ; 后面 4 个角
+               (vec-3  0.5 -0.5 -0.5) (vec-2 1.0 0.0)
+               (vec-3  0.5  0.5 -0.5) (vec-2 1.0 1.0)
+               (vec-3 -0.5  0.5 -0.5) (vec-2 0.0 1.0)
+               (vec-3 -0.5 -0.5  0.5) (vec-2 0.0 0.0)     ; 前面
+               (vec-3  0.5 -0.5  0.5) (vec-2 1.0 0.0)
+               (vec-3  0.5  0.5  0.5) (vec-2 1.0 1.0)
+               (vec-3 -0.5  0.5  0.5) (vec-2 0.0 1.0)
+               (vec-3 -0.5  0.5  0.5) (vec-2 1.0 0.0)     ; 左面
+               (vec-3 -0.5  0.5 -0.5) (vec-2 1.0 1.0)
+               (vec-3 -0.5 -0.5 -0.5) (vec-2 0.0 1.0)
+               (vec-3 -0.5 -0.5  0.5) (vec-2 0.0 0.0)
+               (vec-3  0.5  0.5  0.5) (vec-2 1.0 0.0)     ; 右面
+               (vec-3  0.5  0.5 -0.5) (vec-2 1.0 1.0)
+               (vec-3  0.5 -0.5 -0.5) (vec-2 0.0 1.0)
+               (vec-3  0.5 -0.5  0.5) (vec-2 0.0 0.0)
+               (vec-3 -0.5 -0.5 -0.5) (vec-2 0.0 1.0)     ; 底面
+               (vec-3  0.5 -0.5 -0.5) (vec-2 1.0 1.0)
+               (vec-3  0.5 -0.5  0.5) (vec-2 1.0 0.0)
+               (vec-3 -0.5 -0.5  0.5) (vec-2 0.0 0.0)
+               (vec-3 -0.5  0.5 -0.5) (vec-2 0.0 1.0)     ; 顶面
+               (vec-3  0.5  0.5 -0.5) (vec-2 1.0 1.0)
+               (vec-3  0.5  0.5  0.5) (vec-2 1.0 0.0)
+               (vec-3 -0.5  0.5  0.5) (vec-2 0.0 0.0)))
+
+;; 每个面两个三角形。24 个顶点两两不共用，索引就是顺序往下数：
+;; 6 面 × 6 个下标 = 36。
+;; ★ 绕序：从物体外面看，每个三角形都必须是逆时针（CCW），否则打开
+;;   背面剔除时这个面会消失。后面/右面/顶面最容易照前面/左面/底面写反；
+;;   判断、手算和修正方法见教程 6.5.1。
+(define indices
+  (u16-array 0 3 2   2 1 0        ; 后面
+             4 5 6   6 7 4        ; 前面
+             8 9 10  10 11 8      ; 左面
+             12 14 13  14 12 15   ; 右面
+             16 17 18  18 19 16   ; 底面
+             20 22 21  22 20 23)) ; 顶面
+
+;; 十个立方体各自摆在哪里（世界坐标）。同一份顶点数据配十个不同的 model 矩阵，
+;; 于是十次绘制出十个立方体——这正是 model 矩阵的意义。
+(define cube-positions
+  (list (vec-3  0.0  0.0   0.0)
+        (vec-3  2.0  5.0 -15.0)
+        (vec-3 -1.5 -2.2  -2.5)
+        (vec-3 -3.8 -2.0 -12.3)
+        (vec-3  2.4 -0.4  -3.5)
+        (vec-3 -1.7  3.0  -7.5)
+        (vec-3  1.3 -2.0  -2.5)
+        (vec-3  1.5  2.0  -2.5)
+        (vec-3  1.5  0.2  -1.5)
+        (vec-3 -1.3  1.0  -1.5)))
+
+(define program #f)
+(define vao #f)
+(define texture #f)
+(define u-model-loc #f)
+(define u-view-loc #f)
+(define u-proj-loc #f)
+
+(define (init)
+  (set! program (build-program (gl-vertex-shader vert-src)
+                               (gl-fragment-shader frag-src)))
+
+  ;; ---- 深度缓冲 ----
+  ;; 每个像素记住目前画到的最浅的深度；新片元比它更远就直接丢弃。
+  ;; 不开启的话，后画的片元无条件盖住先画的，遮挡和远近无关（见 6.5）。
+  (gl-enable gl-depth-test)
+
+  ;; ---- 背面剔除 ----
+  ;; 闭合物体背对相机的面永远看不见，不必光栅化。默认正面是逆时针（CCW），
+  ;; 这里剔除背面。注意 GL_CULL_FACE 常量因和函数 glCullFace 撞名，
+  ;; 按本教程命名规则叫 var-cull-face；gl-cull-face 是函数（见 6.5.1）。
+  (gl-enable var-cull-face)
+  (gl-cull-face gl-back)
+
+  ;; ---- 纹理：创建对象、设参数、上传像素（同 04 课） ----
+  (set! texture (texture-new))
+  (gl-bind-texture gl-texture-2d texture)
+  (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-s gl-repeat)
+  (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-t gl-repeat)
+  (gl-tex-parameter-i gl-texture-2d gl-texture-min-filter gl-linear-mipmap-linear)
+  (gl-tex-parameter-i gl-texture-2d gl-texture-mag-filter gl-linear)
+  (define checker (make-checker-texture tex-size tex-cell))
+  (gl-tex-image-2d gl-texture-2d 0 gl-rgba tex-size tex-size 0
+                   gl-rgba gl-unsigned-byte checker)
+  ;; 用了带 mipmap 的过滤就必须生成 mipmap，否则纹理不完整、采样是黑的。
+  (gl-generate-mipmap gl-texture-2d)
+
+  (program-use program)
+  (uniform-set! (uniform-location program "u_tex") 'sampler-2d 0)
+  (gl-active-texture gl-texture0)
+  (gl-bind-texture gl-texture-2d texture)
+
+  ;; ---- VAO / VBO / EBO ----
+  (set! vao (vertex-array-new))
+  (gl-bind-vertex-array vao)
+
+  (define vbo (buffer-new))
+  (gl-bind-buffer gl-array-buffer vbo)
+  (buffer-upload gl-array-buffer vertex-data gl-static-draw)
+  ;; 步长和偏移都从布局算出来，不写字面量：vec-3 + vec-2 = 5 个 float = 20 字节，
+  ;; UV 前面要跳过位置那 3 个 float = 12 字节。
+  (define stride (shader-stride-bytes 'vec-3 'vec-2))
+  (define uv-offset (shader-byte-size 'vec-3))
+  (gl-vertex-attrib-pointer 0 3 gl-float #f stride 0)
+  (gl-enable-vertex-attrib-array 0)
+  (gl-vertex-attrib-pointer 1 2 gl-float #f stride uv-offset)
+  (gl-enable-vertex-attrib-array 1)
+
+  (define ebo (buffer-new))
+  (gl-bind-buffer gl-element-array-buffer ebo)
+  (buffer-upload gl-element-array-buffer indices gl-static-draw)
+
+  (gl-bind-vertex-array 0)
+
+  ;; 三个矩阵 uniform 的位置，链接后各查一次存起来，draw 里直接用。
+  (set! u-model-loc (uniform-location program "u_model"))
+  (set! u-view-loc (uniform-location program "u_view"))
+  (set! u-proj-loc (uniform-location program "u_proj")))
+
+(define (draw)
+  (define t (/ (current-inexact-monotonic-milliseconds) 1000.0))
+
+  (gl-clear-color 0.10 0.12 0.20 1.0)
+  ;; 清屏掩码：01 课见过掩码——一个 bit 代表一块缓冲。这里用按位或把颜色和深度
+  ;; 两块一起擦；只擦颜色的话，上一帧的深度还留着，这帧的遮挡就全错。
+  (gl-clear (bitwise-ior gl-color-buffer-bit gl-depth-buffer-bit))
+
+  (program-use program)
+
+  ;; view：本课偷懒——相机就在原点看向 -z，于是把整个世界沿 -z 推 3 米即可
+  ;; （等价于相机退到 z=+3 处）。真正的相机在 07 课，用 look-at 由 eye/center/up 算。
+  (uniform-set! u-view-loc 'mat-4 (m-translate (vec-3 0.0 0.0 -3.0)))
+  ;; projection：竖直视场角 45°、aspect 取当前窗口宽高比（由 #:on-size 维护）、
+  ;; near 0.1、far 100。投影矩阵每帧重算，所以 aspect 一改，下一帧就生效。
+  (uniform-set! u-proj-loc 'mat-4 (m-perspective (degrees->radians 45.0)
+                                        aspect
+                                        0.1 100.0))
+
+  (gl-bind-vertex-array vao)
+  ;; 同一份顶点数据，配上十个不同的 model 矩阵，画十次。
+  (for ([pos (in-list cube-positions)] [i (in-naturals)])
+    (define speed (+ 0.5 (* 0.3 i)))       ; 每个立方体转速不同，看得出是各自在转
+    (define model (mat4-mul (m-translate pos) (m-rotate-x (* t speed))))
+    (uniform-set! u-model-loc 'mat-4 model)
+    (gl-draw-elements gl-triangles 36 gl-unsigned-short 0))
+  (gl-bind-vertex-array 0))
+
+(define-values (frame canvas)
+  (make-window #:title "06 坐标系"
+               #:width win-w
+               #:height win-h
+               #:init init
+               #:draw draw
+               ;; 窗口尺寸变化、viewport 重设之后被调用，参数是新的客户区宽高。
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+(send frame show #t)
+
+;; 立方体在转，需要定时器不断请求重绘。
+(define timer
+  (new timer% [interval 16]
+              [notify-callback (lambda () (send canvas refresh))]))
+
+;; ------------------------------------------------------------
+;; 试试看（改完重跑）：
+;;   · 注释掉 (gl-enable gl-depth-test)：后画的立方体盖住先画的，遮挡全乱；
+;;     恢复后立刻正常——这就是深度缓冲在干活。
+;;   · 把 45.0 改成 90.0（fovy 变大）：视野更宽，物体在画面里变小、变多。
+;;   · 把 near 从 0.1 改成 4.0：近平面切掉观察空间 z 大于 -4（即世界 z 大于 -1）
+;;     的部分，世界原点那个立方体正好在里面，于是只有它消失。
+;;   · 把某个位置的 z 从 -2.5 改成 5.0：view 是平移 -3，世界 z=5 落到观察空间
+;;     z=+2——在相机背后（w 变成负数），整个被裁掉，于是它消失。
+;; ============================================================</code></pre>
+      </div>
+
+      <h2 id="s6-exercise">试试看</h2>
+
+      <ol class="exercise">
+        <li>注释掉 <code>(gl-enable gl-depth-test)</code>：立方体立刻变成"敞开的盒子"，后画的背面盖住前面的面；恢复这一行，遮挡马上正常。</li>
+        <li>把 <code>45.0</code> 改成 <code>90.0</code>（fovy 变大）：视野变宽，物体在画面里变小。</li>
+        <li>把 near 从 <code>0.1</code> 改成 <code>4.0</code>：近平面切掉观察空间 <code>z</code> 大于 -4 的部分。本课 view 把世界推了 3 米，世界 <code>z</code> 大于 -1 才会落进这个范围——正好是摆在原点那个立方体，于是只有它消失。</li>
+        <li>把某个位置的 <code>z</code> 从 <code>-2.5</code> 改成 <code>5.0</code>：view 是平移 -3，世界 <code>z=5</code> 落到观察空间 <code>z=+2</code>，也就是相机背后。这时 <code>w</code> 是负数，整个立方体在视锥之外被裁掉，于是它消失——镜头后面本来就不该有东西。</li>
+        <li>拖动窗口边缘改变宽高比：立方体不该被拉变形——<code>#:on-size</code> 把新的客户区宽高同步给了 <code>aspect</code>，下一帧的投影就用上新值。把那一行 <code>#:on-size</code> 删掉再看：<code>aspect</code> 一直停在 800 : 600，窗口拉宽之后画面横向拉伸，立方体正面变成明显偏宽的长方形。</li>
+        <li>在 <code>init</code> 里加一行 <code>(gl-depth-func gl-greater)</code>：遮挡关系整个反转，远的盖住近的——"遮挡方向是比较函数给的"这句话就变成看得见的了。看完删掉这一行，恢复默认的 <code>gl-less</code>。</li>
+        <li>把右面索引从 <code>12 14 13</code> / <code>14 12 15</code> 改回 <code>12 13 14</code> / <code>14 15 12</code>：开着背面剔除时右面消失；改回来恢复。再把 <code>(gl-front-face gl-ccw)</code> 改成 <code>(gl-front-face gl-cw)</code>，看整个立方体如何内外翻转。</li>
+      </ol>
+
+      <h2 id="s6-summary">小结</h2>
+
+      <table class="spec">
+        <thead>
+          <tr>
+            <th>概念</th>
+            <th>一句话</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>model / view / projection</td>
+            <td>三段换系：局部→世界、世界→观察、观察→裁剪，从右往左依次作用在顶点上</td>
+          </tr>
+          <tr>
+            <td>裁剪空间与 NDC</td>
+            <td>投影把视锥压成标准立方体，顶点着色器交给 <code>gl-position</code> 的是裁剪坐标，GPU 之后映射到屏幕像素</td>
+          </tr>
+          <tr>
+            <td>透视除法</td>
+            <td><code>m-perspective</code> 的 <code>col2</code> 那个 <code>-1</code> 把 -z 抄进 <code>w</code>，整体除以 <code>w</code> 后远的自然变小</td>
+          </tr>
+          <tr>
+            <td>深度缓冲</td>
+            <td>每像素记目前最浅的深度，更远的片元直接丢弃；不开则后画的盖住先画的，与远近无关</td>
+          </tr>
+          <tr>
+            <td>深度比较函数</td>
+            <td>怎么比由 <code>gl-depth-func</code> 定，默认 <code>gl-less</code>（更近才赢）；同深度想让后画的赢就换 <code>gl-lequal</code>，贴共面贴花时用得上</td>
+          </tr>
+          <tr>
+            <td>清屏掩码</td>
+            <td>掩码里一个 bit 管一块缓冲，用按位或让颜色和深度一起擦</td>
+          </tr>
+          <tr>
+            <td>背面剔除</td>
+            <td>按三角形绕序丢掉背面；<code>gl-enable var-cull-face</code> + <code>gl-cull-face gl-back</code>，绕序要一致</td>
+          </tr>
+          <tr>
+            <td>24 与 36 的来历</td>
+            <td>24 = 6 面 × 4 顶点（每面各摊一份 UV）；36 = 6 面 × 6 下标（每面两个三角形）</td>
+          </tr>
+        </tbody>
+      </table>
+
+    </main>
+
+    <nav class="toc">
+      <b>本节目录</b>
+      <ol>
+        <li><a href="#s6-1">6.1 三个空间</a></li>
+        <li><a href="#s6-2">6.2 model：把物体摆进世界</a></li>
+        <li><a href="#s6-3">6.3 view：把世界搬到相机眼前</a></li>
+        <li><a href="#s6-4">6.4 projection 与透视除法</a></li>
+        <li><a href="#s6-5">6.5 深度缓冲第一次出现</a></li>
+        <li><a href="#s6-5-1">6.5.1 背面剔除（拓展）</a></li>
+        <li><a href="#s6-6">6.6 立方体的顶点数据</a></li>
+        <li><a href="#s6-code">完整代码</a></li>
+        <li><a href="#s6-exercise">试试看</a></li>
+        <li><a href="#s6-summary">小结</a></li>
+      </ol>
+    </nav>
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="../05-transformations/index.html">← 05 变换</a>
+    <a class="next" href="../07-camera/index.html">07 相机 →</a>
+  </nav>
+
+  <footer class="site-footer">
+    <p>本教程参照 learnopengl.com 的章节节奏，代码用 racket-shader 写。纯静态站，源码可在浏览器里直接查看。</p>
+  </footer>
+
+</div>
+</body>
+</html>

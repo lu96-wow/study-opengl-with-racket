@@ -1,0 +1,1119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>07 · 相机 — study-opengl</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/highlight.js" defer></script>
+</head>
+<body>
+<div class="page">
+
+  <header class="site-header">
+    <a class="site-title" href="../index.html">study-opengl</a>
+    <nav class="crumbs"><a href="../index.html">课程</a> / <span>07 · 相机</span></nav>
+  </header>
+
+  <div class="layout">
+    <main class="content">
+
+      <h1>相机</h1>
+
+      <p class="goal">本节目标：把 06 课"用 <code>m-translate</code> 凑出来的 view"换成真正的相机——给定 eye（相机在哪）、center（看向哪）、up（头顶朝哪）三个值，用 <code>m-look-at</code> 算出 view 矩阵，再让相机绕世界原点转圈。跑起来应该看到十个棋盘立方体，镜头绕着它们转，任何时刻都是斜侧角度看过去。7.6 把相机交到键盘上，并用按键状态做到真正的连续移动。</p>
+
+      <div class="run"><span class="prompt">$</span> racket 07-camera/camera.rkt</div>
+
+            <div class="note key">
+        <p><b>计算位置</b>look-at / perspective 在 CPU 算，camera 的 eye/target/up 由 CPU 每帧更新；GPU 只负责对每个顶点乘 view/proj。替代方案是 CPU 预变换顶点，但相机一动就要重传（见 R2）。</p>
+      </div>
+
+<h2 id="s7-1">7.1 相机是什么</h2>
+
+      <p>顶点最后要过三道矩阵：model 把物体摆进世界、view 把世界换进<strong>观察空间</strong>、projection 把观察空间里的视锥压成 NDC（06 课讲的就是这三段串联）。这一课只动中间那一道。</p>
+
+      <p>观察空间（也叫相机空间）的定义是：<strong>以相机为原点、相机朝 -z 看</strong>的坐标系。它和别的坐标系没有本质区别，只是坐标轴跟着相机走——+y 是头顶方向、+x 是相机的右手边、相机看向 -z（跟 OpenGL 默认的"相机朝 -z"对上了）。view 矩阵干的活就是：把世界里的一个点，换算成"在相机眼里它长在哪"。</p>
+
+      <p>06 课的 view 只有一行凑合：<code>(m-translate (vec-3 0.0 0.0 -3.0))</code>——把整个世界往后推 3 格。这看着像"移动物体"，其实是在说"相机在原点、朝 -z、离物体 3 格远"：把世界推到 -3，和把相机挪到 +3 是一回事。</p>
+
+      <p>这个写法有两个死结：相机位置只能是"原点加上 z 轴上某一段"，朝向只能是 -z。想让相机站到斜侧去看，就得反过来把整个世界转到合适的角度——相机想动，动的是世界，越写越绕。真正的相机要能回答三个问题：</p>
+
+      <table class="spec">
+        <thead>
+          <tr>
+            <th>输入</th>
+            <th>含义</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>eye</code></td>
+            <td>相机自己在世界里的位置</td>
+          </tr>
+          <tr>
+            <td><code>center</code></td>
+            <td>相机看向的那个点</td>
+          </tr>
+          <tr>
+            <td><code>up</code></td>
+            <td>世界里的"上"大致是哪个方向，用来定头顶</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>lib/matrix.rkt 里的 <code>m-look-at</code> 就是吃这三个值、吐出 view 矩阵的函数。下一节把它的推导走一遍。</p>
+
+      <h2 id="s7-2">7.2 look-at 的三基推导</h2>
+
+      <p>相机坐标系要三个互相垂直的单位向量当轴。我们从 eye、center、up 三个点把它们造出来：</p>
+
+      <ol>
+        <li><strong>f（前向）</strong>：相机看向哪，就是 <code>center - eye</code> 这个方向，归一化成单位长度——<code>f = normalize(center - eye)</code>。这条最直观：两点的连线。</li>
+        <li><strong>s（右向）</strong>：相机的右手边要和 f、还要和世界上给的 up 都垂直，那就叉乘——<code>s = normalize(f × up)</code>。叉乘的结果同时垂直于两个输入，方向由右手法则定：拇指从 f 卷向 up，s 指出来的那一侧就是相机的右手边。</li>
+        <li><strong>u（头顶）</strong>：f 和 s 已经垂直了，再叉一次就得到第三个轴——<code>u = s × f</code>。注意顺序是 s × f 而不是 f × s，反了 u 就指向脚底。这样 u 也垂直于前两个，三个轴两两正交。</li>
+      </ol>
+
+      <figure class="figure">
+        <svg viewBox="0 0 660 440" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>从 eye 出发的几条箭头：f 指向 center 是前向，s 由 f × up 得到是右向，u 由 s × f 得到是头顶方向；up 是世界给的"上"，只是提示方向</title>
+          <defs>
+            <marker id="cam-f-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+            </marker>
+            <marker id="cam-s-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#e68c3c"/>
+            </marker>
+            <marker id="cam-u-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#4f9e5b"/>
+            </marker>
+            <marker id="cam-up-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--muted)"/>
+            </marker>
+          </defs>
+
+          <line x1="180" y1="230" x2="180" y2="80" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="6 5" marker-end="url(#cam-up-arrow)"/>
+          <text x="192" y="74" font-size="13" fill="var(--muted)">up（世界给的"上"）</text>
+
+          <line x1="180" y1="230" x2="450" y2="41" stroke="var(--accent)" stroke-width="2" marker-end="url(#cam-f-arrow)"/>
+          <text x="400" y="108" font-size="13" fill="var(--accent)">f = normalize(center - eye)</text>
+
+          <line x1="180" y1="230" x2="266" y2="353" stroke="#e68c3c" stroke-width="2" marker-end="url(#cam-s-arrow)"/>
+          <text x="285" y="340" font-size="13" fill="#e68c3c">s = normalize(f × up)</text>
+
+          <line x1="180" y1="230" x2="94" y2="107" stroke="#4f9e5b" stroke-width="2" marker-end="url(#cam-u-arrow)"/>
+          <text x="34" y="152" font-size="13" fill="#4f9e5b">u = s × f</text>
+
+          <circle cx="180" cy="230" r="4" fill="var(--fg)"/>
+          <text x="170" y="252" text-anchor="end" font-size="13" fill="var(--fg)">eye（相机位置）</text>
+          <circle cx="450" cy="41" r="4" fill="var(--fg)"/>
+          <text x="460" y="34" font-size="13" fill="var(--fg)">center（看向的点）</text>
+
+          <text x="330" y="396" text-anchor="middle" font-size="13" fill="var(--muted)">f、s、u 两两垂直、都是单位长度——它们就是相机坐标系的三个轴</text>
+          <text x="330" y="420" text-anchor="middle" font-size="13" fill="var(--muted)">s 当 x 轴、u 当 y 轴、-f 当 z 轴（相机朝 -z 看）</text>
+        </svg>
+        <figcaption class="figcaption">图 7-1 由 eye、center、up 三个点推出相机的三个基向量</figcaption>
+      </figure>
+
+      <p>三个容易卡住的点：</p>
+
+      <ul>
+        <li><strong>为什么 up 是输入，却不能直接当 u？</strong> <code>up</code> 只是提示"头顶大概朝哪"，我们不要求它和 f 垂直（人手给方向时也给不准）；叉乘加归一化会把真正垂直的那个方向算出来。</li>
+        <li><strong>为什么 u 不用归一化？</strong> s 和 f 是互相垂直的单位向量，两个垂直单位向量的叉乘长度正好是 1（夹角 90°，sin 90° = 1），所以 <code>s × f</code> 天然是单位向量。</li>
+        <li><strong>为什么相机坐标系的 z 轴是 -f 而不是 f？</strong> OpenGL 约定相机朝着 -z 看，所以"相机看过去的方向"在相机坐标里是负 z；f 指的方向对应的就是 <code>-z</code> 轴。</li>
+      </ul>
+
+      <h2 id="s7-3">7.3 view 矩阵长什么样</h2>
+
+      <p>拿到 s、u、f，view 矩阵就是"把世界搬进相机坐标"这个动作本身。拆成两步看：</p>
+
+      <ol>
+        <li><strong>旋转</strong>：把世界里的 s、u、-f 三个方向分别对齐到相机坐标系的 x、y、z 轴上。矩阵的前三列就装这三个方向的分量。</li>
+        <li><strong>平移</strong>：相机在相机坐标系里应该在原点，所以再减掉 eye。第四列那三个 <code>-dot(轴, eye)</code> 就是"先旋转、再减 eye"合起来的结果——旋转部分正交，逆等于转置，位移那一项就化成了基与 eye 的点积取负。</li>
+      </ol>
+
+      <p>所以 <code>m-look-at</code> 从头到尾没有求逆矩阵，它直接照着这两步把矩阵写出来，实现只有四行：</p>
+
+      <div class="code">
+        <div class="code-title">lib/matrix.rkt：m-look-at<a class="srclink" href="../code.html?f=lib/matrix.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">;; 视图矩阵：把"世界坐标"换成"相机坐标"，等价于把整个世界搬到相机眼前——
+;; 相机在 eye 看向 center、以 up 定头顶方向，原点就落到相机上、-z 指向 center。
+;; f 是相机前向、s 是右向、u 是头顶方向（三者正交）；位移那列把 eye 抹掉。
+(define (m-look-at eye center up)
+  (define f (vnormalize (vsub center eye)))
+  (define s (vnormalize (vcross f up)))
+  (define u (vcross s f))
+  (mat-4 (vec-4 (vx s) (vx u) (- (vx f)) 0.0)
+        (vec-4 (vy s) (vy u) (- (vy f)) 0.0)
+        (vec-4 (vz s) (vz u) (- (vz f)) 0.0)
+        (vec-4 (- (vdot s eye)) (- (vdot u eye)) (vdot f eye) 1.0)))</code></pre>
+      </div>
+
+      <p>对着图 7-1 读这四列：第一列 <code>(vx s) (vx u) (- (vx f)) 0.0</code> 装的是 s、u、-f 的 x 分量，第二、三列装 y、z 分量，最后一列 <code>(- (vdot s eye)) (- (vdot u eye)) (vdot f eye) 1.0</code> 是位移，w 补 1。整张矩阵把相机坐标系的三个轴排成行、把 eye 挪到原点——正是"世界 → 相机"。</p>
+
+      <figure class="figure">
+        <svg viewBox="0 0 660 320" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>view 矩阵的四列：前三列装 s、u、-f 的分量（旋转），第四列装位移（平移），把 eye 挪到原点。特例：eye=(0,0,3)、center=原点、up=(0,1,0) 时，它逐元素等于 m-translate (0,0,-3)</title>
+
+          <rect x="56" y="96" width="120" height="104" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <rect x="176" y="96" width="56" height="104" fill="#e68c3c" fill-opacity="0.15" stroke="#e68c3c" stroke-width="1.5"/>
+          <line x1="96" y1="96" x2="96" y2="200" stroke="var(--line)" stroke-width="1"/>
+          <line x1="136" y1="96" x2="136" y2="200" stroke="var(--line)" stroke-width="1"/>
+          <line x1="56" y1="122" x2="232" y2="122" stroke="var(--line)" stroke-width="1"/>
+          <line x1="56" y1="148" x2="232" y2="148" stroke="var(--line)" stroke-width="1"/>
+          <line x1="56" y1="174" x2="232" y2="174" stroke="var(--line)" stroke-width="1"/>
+
+          <text x="76" y="88" text-anchor="middle" font-size="13" fill="var(--accent)">s</text>
+          <text x="116" y="88" text-anchor="middle" font-size="13" fill="var(--accent)">u</text>
+          <text x="156" y="88" text-anchor="middle" font-size="13" fill="var(--accent)">-f</text>
+          <text x="204" y="88" text-anchor="middle" font-size="13" fill="#e68c3c">位移</text>
+
+          <text x="48" y="113" text-anchor="end" font-size="13" fill="var(--muted)">x</text>
+          <text x="48" y="139" text-anchor="end" font-size="13" fill="var(--muted)">y</text>
+          <text x="48" y="165" text-anchor="end" font-size="13" fill="var(--muted)">z</text>
+          <text x="48" y="191" text-anchor="end" font-size="13" fill="var(--muted)">w</text>
+
+          <text x="76" y="113" text-anchor="middle" font-size="12" fill="var(--fg)">sx</text>
+          <text x="116" y="113" text-anchor="middle" font-size="12" fill="var(--fg)">sy</text>
+          <text x="156" y="113" text-anchor="middle" font-size="12" fill="var(--fg)">sz</text>
+          <text x="204" y="113" text-anchor="middle" font-size="12" fill="var(--fg)">-s·eye</text>
+
+          <text x="76" y="139" text-anchor="middle" font-size="12" fill="var(--fg)">ux</text>
+          <text x="116" y="139" text-anchor="middle" font-size="12" fill="var(--fg)">uy</text>
+          <text x="156" y="139" text-anchor="middle" font-size="12" fill="var(--fg)">uz</text>
+          <text x="204" y="139" text-anchor="middle" font-size="12" fill="var(--fg)">-u·eye</text>
+
+          <text x="76" y="165" text-anchor="middle" font-size="12" fill="var(--fg)">-fx</text>
+          <text x="116" y="165" text-anchor="middle" font-size="12" fill="var(--fg)">-fy</text>
+          <text x="156" y="165" text-anchor="middle" font-size="12" fill="var(--fg)">-fz</text>
+          <text x="204" y="165" text-anchor="middle" font-size="12" fill="var(--fg)">f·eye</text>
+
+          <text x="76" y="191" text-anchor="middle" font-size="12" fill="var(--fg)">0</text>
+          <text x="116" y="191" text-anchor="middle" font-size="12" fill="var(--fg)">0</text>
+          <text x="156" y="191" text-anchor="middle" font-size="12" fill="var(--fg)">0</text>
+          <text x="204" y="191" text-anchor="middle" font-size="12" fill="var(--fg)">1</text>
+
+          <line x1="252" y1="88" x2="252" y2="296" stroke="var(--line)" stroke-width="1"/>
+
+          <text x="270" y="112" font-size="13" fill="var(--accent)">前三列：把 s / u / -f 对齐到 x / y / z —— 旋转</text>
+          <text x="270" y="140" font-size="13" fill="#e68c3c">第四列：把 eye 抹掉 —— 平移</text>
+          <text x="270" y="176" font-size="13" fill="var(--muted)">合起来：世界坐标 → 相机坐标</text>
+
+          <text x="270" y="226" font-size="13" fill="var(--fg)">特例：eye=(0,0,3)、center=原点、up=(0,1,0)</text>
+          <text x="270" y="252" font-size="13" fill="var(--fg)">= m-translate (0,0,-3)</text>
+          <text x="270" y="280" font-size="13" fill="var(--accent)">16 个数逐元素相等（实测）</text>
+        </svg>
+        <figcaption class="figcaption">图 7-2 view 矩阵的四列各是谁：前三列是旋转，第四列是平移</figcaption>
+      </figure>
+
+      <div class="note key">
+        <p><b>关键点</b>06 课那行凑合的 view，其实是 look-at 的特例：<code>m-look-at (vec-3 0.0 0.0 3.0)</code>（eye 在 z 轴 3 处）、center 取原点、up 取 <code>(vec-3 0.0 1.0 0.0)</code>，算出来与 <code>m-translate (vec-3 0.0 0.0 -3.0)</code> 逐元素相等——16 个数一个个比较全是 <code>#t</code>（实测；其中几个是 <code>-0.0</code>，数值上等于 <code>0.0</code>）。相机沿 z 轴站好、朝 -z 看，look-at 就退化成"把世界推远"，两条路说的是同一件事。</p>
+      </div>
+
+      <h2 id="s7-4">7.4 绕圈动画</h2>
+
+      <p>相机"会动"这件事没有魔法：eye 每帧算一次，view 就每帧重算，然后照常上传。让 eye 在一个圆上走，就是绕圈：</p>
+
+      <div class="code">
+        <div class="code-title">07-camera/camera.rkt：算 eye、view 和 proj<a class="srclink" href="../code.html?f=07-camera/camera.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">  ;; ---- 相机：绕着世界原点转圈 ----
+  ;; eye 在半径 3、高 1.2 的圆上走：t 每秒转 0.5 弧度，转一圈约 12.6 秒。
+  ;; y 固定 1.2 是让相机略高于目标（原点），于是有一点俯视感，看得到立方体顶面。
+  (define t (/ (current-inexact-monotonic-milliseconds) 1000.0))
+  (define eye (vec-3 (* 3.0 (cos (* t 0.5))) 1.2 (* 3.0 (sin (* t 0.5)))))
+  ;; 每帧重算：eye 在动，view 就得跟着动。
+  ;; center 是相机看的目标；up 只说"头顶朝哪"，长度无所谓（look-at 会归一化）。
+  (define view (m-look-at eye (vec-3 0.0 0.0 0.0) (vec-3 0.0 1.0 0.0)))
+
+  ;; 投影同 06：竖直视场 45°、aspect 与窗口同源、近远平面 0.1 / 100。
+  (define proj (m-perspective (degrees-&gt;radians 45.0) aspect 0.1 100.0))
+</code></pre>
+      </div>
+
+      <p>几处细节：</p>
+
+      <ul>
+        <li><code>eye</code> 的 x、z 分别取 cos、sin 乘半径 3，画出来就是一个半径 3 的水平圆；y 固定 1.2，所以相机始终比目标高一点，带一点俯视，能看到立方体的顶面。</li>
+        <li><code>(* t 0.5)</code> 里的 0.5 是转速：t 是秒，角速度每秒 0.5 弧度，转一圈约 12.6 秒。想让镜头转快点就调这个数。</li>
+        <li><code>center</code> 是相机看的目标，这里固定世界原点；<code>up</code> 写世界的"上" <code>(0,1,0)</code>。up 只提供方向、长度不影响结果——look-at 内部会归一化。</li>
+        <li>投影那行和 06 课完全一样：竖直视场 45°、aspect 与窗口宽高同源（<code>aspect</code> 由 <code>win-w</code> / <code>win-h</code> 算出来，改窗口尺寸不会对不上）、近平面 0.1、远平面 100。</li>
+      </ul>
+
+      <p>上传的策略也跟着变：view 和 projection 整帧只有一份（十个立方体共用），在循环外传一次就够；model 每个立方体各不相同，只能在循环里逐个传。（这一节的相机只会沿一条写死的圆绕圈——想让它听键盘自己走，见 7.6。）</p>
+
+      <h2 id="s7-5">7.5 up 向量与退化</h2>
+
+      <p>回头看 s 的算法：<code>s = normalize(f × up)</code>。叉乘有个性质——两个向量平行时结果就是零向量。所以当 f 与 up 平行，也就是相机正对着脚下或正对着头顶看时，<code>f × up = 0</code>，而归一化零向量是没有定义的。</p>
+
+      <div class="note warn">
+        <p><b>坑</b>零向量没有方向，归一化它得到的是 NaN：GLSL 的 <code>normalize</code> 就是如此，顶点坐标一旦变成 NaN，整个画面什么都不剩。本教程的 <code>lib/matrix.rkt</code> 里 <code>vnormalize</code> 更直接——遇到零向量就抛错 <code>vec-normalize: 零向量不能归一化</code>，于是在 draw 里每帧中断，立方体一个也画不出来，终端每秒刷几十条同样的消息（实测：8 秒里 stderr 涨到 270 KB）。标准 GL 行为也是"崩"，只是崩在 GPU 里、表现为画面全黑。</p>
+      </div>
+
+      <p>所以绕圈的 y 不能走到让 eye 和 center 的连线竖直的位置——本课半径 3、y 固定 1.2，f 永远斜着，撞不上。真要做垂直俯视图，得换一个跟 f 不平行的 up，比如 <code>(vec-3 0.0 0.0 1.0)</code>：这时"上"变成世界的 +z，画面会跟着"躺倒"（下面试试看里就有这一条）。</p>
+
+      <h2 id="s7-6">7.6 自由相机：按键状态 + 连续移动</h2>
+
+      <p>7.4 的 eye 是一条写死的圆——相机只能绕原点转，走不了、也转不了头。这一节把它交到键盘手上：<strong>WASD</strong> 前后左右平移，<strong>← →</strong> 转头、<strong>↑ ↓</strong> 抬头低头。跑 <code>racket 07-camera/camera-walk.rkt</code>，长按 W 会立即、平滑地一直走；松开就停，W+D 还能斜着走。</p>
+
+      <p><strong>输入从哪来。</strong>01 课讲过 racket/gui 是事件驱动的：没有 while 主循环，GUI 收到"该重绘了""按了键"这类消息时才回调你写的函数（见 <a href="../01-window/index.html#s1-6">01 课 1.6</a>）。键盘也是这么进来的——<code>make-window</code> 现在提供两个回调：<code>#:on-key</code> 在按下时调用，<code>#:on-key-up</code> 在松开时调用。字母键是字符（如 <code>#\w</code>），方向键是符号（如 <code>'left</code>）。</p>
+
+      <p>我们不需要"每次事件走一步"，而是把事件翻译成状态：<strong>按下写入一个 <code>held</code> 集合，松开删除，<code>draw</code> 每帧读这个集合</strong>。这和 learnopengl 用 <code>glfwGetKey</code> 轮询"此刻哪些键正被按住"是同一件事，只是 Racket 这边由我们自己把按下/松开拼成状态。</p>
+
+      <div class="code">
+        <div class="code-title">lib/window.rkt：按下和松开分开回调<a class="srclink" href="../code.html?f=lib/window.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">(define/override (on-char e)
+  (define code (send e get-key-code))
+  (if (eq? code &#39;release)
+      (on-key-up (send e get-key-release-code))
+      (on-key code)))</code></pre>
+      </div>
+
+
+
+      <div class="note key">
+        <p><b>关键点</b>事件只负责改状态，真正的移动发生在每帧的 <code>draw</code> 里。这样长按、松开、组合键、窗口失焦都能正确处理，也不再依赖操作系统的按键自动重复。</p>
+      </div>
+
+      <figure class="figure">
+        <svg viewBox="0 0 720 150" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>按键状态模型：按下事件写入 held，松开事件删除，draw 每帧读 held 更新相机</title>
+          <defs>
+            <marker id="held-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+            </marker>
+          </defs>
+
+          <rect x="20" y="24" width="160" height="40" rx="8" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <text x="100" y="49" text-anchor="middle" font-size="14" fill="var(--accent)">#:on-key</text>
+          <text x="100" y="88" text-anchor="middle" font-size="13" fill="var(--muted)">按下 → 写入</text>
+
+          <rect x="280" y="24" width="160" height="40" rx="8" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="360" y="49" text-anchor="middle" font-size="14" fill="var(--fg)">held 集合</text>
+          <text x="360" y="88" text-anchor="middle" font-size="13" fill="var(--muted)">key → 按住？</text>
+
+          <rect x="540" y="24" width="160" height="40" rx="8" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <text x="620" y="49" text-anchor="middle" font-size="14" fill="var(--accent)">#:on-key-up</text>
+          <text x="620" y="88" text-anchor="middle" font-size="13" fill="var(--muted)">松开 → 删除</text>
+
+          <line x1="180" y1="44" x2="277" y2="44" stroke="var(--line)" stroke-width="1.5" marker-end="url(#held-arrow)"/>
+          <line x1="440" y1="44" x2="537" y2="44" stroke="var(--line)" stroke-width="1.5" marker-end="url(#held-arrow)"/>
+
+          <rect x="280" y="112" width="160" height="30" rx="8" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="360" y="132" text-anchor="middle" font-size="13" fill="var(--fg)">draw 每帧读 held</text>
+          <line x1="360" y1="64" x2="360" y2="109" stroke="var(--line)" stroke-width="1.5" marker-end="url(#held-arrow)"/>
+          <text x="372" y="95" font-size="12" fill="var(--muted)">dt</text>
+        </svg>
+        <figcaption class="figcaption">图 7-3 事件只改状态，真正移动发生在每帧的 draw 里</figcaption>
+      </figure>
+
+      <p>窗口失去焦点时要清空 <code>held</code>：否则按住 W 切走窗口，回来时集合里还留着 W，相机会一直往前走。<code>lib/window.rkt</code> 因此提供 <code>#:on-focus</code>；本课在失焦时 <code>(hash-clear! held)</code>。</p>
+
+      <p><strong>走多远。</strong>移动不是"每次按键走一步"，而是每帧按 <code>步长 = 速度 × dt</code> 更新，<code>dt</code> 是这一帧距上一帧的秒数。这样速度只由 <code>move-speed</code> 决定，与帧率、按键重复率都无关。另一个坑：窗口卡了 5 秒再回来，<code>dt</code> 就是 5，一帧下去十几格、直接飞出场景——所以 <code>dt</code> 要钳一个上限（本课 0.1 秒）。</p>
+
+      <p><strong>朝哪走。</strong>相机朝哪，用两个角就够：<strong>yaw</strong>（方位角）在地面平面里绕世界 y 轴转，决定朝东南西北哪一边；<strong>pitch</strong>（俯仰角）抬头 / 低头。两者合成前向单位向量：<code>forward = (cos pitch · cos yaw, sin pitch, cos pitch · sin yaw)</code>。看这个式子：<code>sin pitch</code> 是竖直分量，抬头就变大；<code>cos pitch</code> 缩着地面里的两个分量，越抬头水平分量越小、越朝上指。W/S 沿 forward 前后走，A/D 沿"右手边"横移，右手边由 <code>right = normalize(forward × (0,1,0))</code> 算出来。</p>
+
+      <figure class="figure">
+        <svg viewBox="0 0 660 440" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>yaw 是相机在地面平面里绕世界 y 轴的转角（地面上的圆上的那段弧），pitch 是 forward 与地面的夹角；两个角合成从 eye 出发的 forward 箭头</title>
+          <defs>
+            <marker id="walk-fwd-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+            </marker>
+            <marker id="walk-proj-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+            </marker>
+            <marker id="walk-base-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--muted)"/>
+            </marker>
+          </defs>
+
+          <ellipse cx="240" cy="320" rx="185" ry="58" fill="var(--accent-soft)" stroke="var(--line)" stroke-width="1.5"/>
+
+          <line x1="240" y1="320" x2="240" y2="252" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="6 5" marker-end="url(#walk-base-arrow)"/>
+
+          <path d="M 240 262 A 185 58 0 0 1 358.9 275.6" fill="none" stroke="#e68c3c" stroke-width="2.5"/>
+
+          <line x1="240" y1="320" x2="427.3" y2="250.0" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="6 5" marker-end="url(#walk-proj-arrow)"/>
+
+          <line x1="240" y1="320" x2="427.3" y2="155.0" stroke="var(--accent)" stroke-width="2" marker-end="url(#walk-fwd-arrow)"/>
+
+          <path d="M 329.0 286.8 A 95 95 0 0 0 311.3 257.2" fill="none" stroke="#4f9e5b" stroke-width="2.5"/>
+
+          <circle cx="240" cy="320" r="4" fill="var(--fg)"/>
+          <text x="228" y="314" text-anchor="end" font-size="13" fill="var(--fg)">eye</text>
+
+          <text x="240" y="246" text-anchor="middle" font-size="13" fill="var(--muted)">基准方向 -z</text>
+          <text x="438" y="150" font-size="13" fill="var(--accent)">forward</text>
+          <text x="438" y="205" font-size="13" fill="#4f9e5b">pitch：抬头 / 低头</text>
+          <text x="438" y="262" font-size="13" fill="var(--accent)">地面上的投影</text>
+          <text x="40" y="400" font-size="13" fill="#e68c3c">yaw：绕世界 y 轴、在地面平面里转</text>
+        </svg>
+        <figcaption class="figcaption">图 7-4 yaw 在地面平面里转、pitch 抬头低头，两角合成 forward</figcaption>
+      </figure>
+
+      <div class="note key">
+        <p><b>关键点</b>pitch 必须钳在 ±89°，不能给到 ±90°。到 ±90° 时 forward 竖直、与 up 平行，7.5 讲的退化就回来了：<code>f × up = 0</code>，归一化零向量得 NaN，画面整个崩。你自己在 7.5 里撞过的那一下，真相机就靠<strong>一行钳制</strong>挡在门外。</p>
+      </div>
+
+      <p>三件事接起来，就是这三个函数：按下/松开只改 <code>held</code>，<code>update-camera</code> 每帧读状态并乘 dt。</p>
+
+      <div class="code">
+        <div class="code-title">07-camera/camera-walk.rkt：按键状态 + 每帧更新<a class="srclink" href="../code.html?f=07-camera/camera-walk.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">;; 按下写入、松开删除
+(define held (make-hash))
+(define (held? key) (hash-has-key? held key))
+(define (on-key-down key)
+  (when (memq key move-keys) (hash-set! held key #t)))
+(define (on-key-up key)
+  (when (memq key move-keys) (hash-remove! held key)))
+
+;; 窗口失焦时清空，避免粘键
+(define (on-focus on?)
+  (unless on? (hash-clear! held)))
+
+;; 每帧：先转身，再按新朝向平移
+(define (update-camera)
+  (define now (current-inexact-monotonic-milliseconds))
+  (define dt (min 0.1 (/ (- now last-frame-ms) 1000.0)))
+  (set! last-frame-ms now)
+  (define turn (* turn-speed dt))
+  (when (held? &#39;left)  (set! yaw (- yaw turn)))
+  (when (held? &#39;right) (set! yaw (+ yaw turn)))
+  (when (held? &#39;up)    (set! pitch (min pitch-limit (+ pitch turn))))
+  (when (held? &#39;down)  (set! pitch (max (- pitch-limit) (- pitch turn))))
+  (define fwd (camera-forward))
+  (define right (camera-right))
+  (define step (* move-speed dt))
+  (when (held? #\w) (set! pos (vadd pos (vmul fwd step))))
+  (when (held? #\s) (set! pos (vsub pos (vmul fwd step))))
+  (when (held? #\a) (set! pos (vsub pos (vmul right step))))
+  (when (held? #\d) (set! pos (vadd pos (vmul right step)))))
+
+;; draw 开头调用
+(update-camera)</code></pre>
+      </div>
+
+      <p>而 forward 是这么从两个角算出来的：</p>
+
+      <div class="code">
+        <div class="code-title">07-camera/camera-walk.rkt：欧拉角算 forward<a class="srclink" href="../code.html?f=07-camera/camera-walk.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">;; ------------------------------------------------------------
+;; 三、欧拉角：由 yaw / pitch 算出 forward 与 right
+;; ------------------------------------------------------------
+;; 把朝向拆成两个角来看：
+;;   yaw   在地面平面里转（绕世界 y 轴），决定朝东南西北哪边
+;;   pitch 抬头 / 低头，决定朝上看还是朝下看
+;; 两个角一合成就是前向单位向量：
+;;   forward = (cos pitch · cos yaw, sin pitch, cos pitch · sin yaw)
+;; cos pitch 同时缩着地面里的两个分量：越抬头，水平分量越小、竖直分量 sin pitch 越大。
+(define (camera-forward)
+  (vec-3 (* (cos pitch) (cos yaw))
+        (sin pitch)
+        (* (cos pitch) (sin yaw))))
+
+;; right 是相机的右手边：forward 与世界的"上" (0,1,0) 叉乘再归一化。
+;; 用世界的上而不是相机的 up，是因为 yaw 只在地面平面里转——这样 right 永远躺在
+;; 地面上，横移（A/D）才不会把人带得上下漂。
+(define (camera-right)
+  (vnormalize (vcross (camera-forward) (vec-3 0.0 1.0 0.0))))
+</code></pre>
+      </div>
+
+      <p>把相机状态（<code>pos</code> / <code>yaw</code> / <code>pitch</code>）、上面这段输入，再配上 7.4 那套每帧重算 view / proj 的 draw，就是一架完整的自由相机。完整代码在 <a class="filelink" href="../code.html?f=07-camera/camera-walk.rkt">07-camera/camera-walk.rkt</a>：</p>
+
+      <div class="code">
+        <div class="code-title">07-camera/camera-walk.rkt<a class="srclink" href="../code.html?f=07-camera/camera-walk.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">#lang glsl-opengl
+;; ============================================================
+;; 07 · 相机（自由相机）：按键状态 + 连续移动
+;; 运行：racket 07-camera/camera-walk.rkt
+;; 同课对照：07-camera/camera.rkt（相机绕圈版）
+;; ============================================================
+;; 自由相机 = 三件事：
+;;   ① 输入      #:on-key 记录"按下"，#:on-key-up 记录"松开"，维护一个 held 集合
+;;   ② 每帧      draw 里读 held 集合，按 dt 更新相机位置/朝向
+;;   ③ 朝向      yaw / pitch 两个欧拉角合成 forward
+;; 不依赖系统"按键自动重复"：长按立即连续走，W+D 可以斜走，松开明确停止。
+;; 这就是 learnopengl 用 glfwGetKey 轮询"哪些键正被按住"的等价物，
+;; 只不过 Racket 这边是事件推送，我们自己把按下/松开拼成状态。
+
+(require racket/class
+         racket/gui                     ; timer%
+         racket/math                    ; degrees->radians
+         "../lib/window.rkt"
+         "../lib/matrix.rkt")           ; m-look-at / m-translate / m-rotate-x / m-perspective
+
+;; ------------------------------------------------------------
+;; 一、窗口尺寸与 aspect
+;; ------------------------------------------------------------
+(define win-w 800)
+(define win-h 600)
+;; aspect 必须和窗口实际的宽高比一致，否则画面被拉伸。它做成可变的：窗口被拖成别的
+;; 比例时，下面 #:on-size 回调会把它重算（06 课没处理的这个点，在这里补上）。
+(define aspect (/ win-w win-h))
+
+;; ------------------------------------------------------------
+;; 二、相机状态（模块级、可变）
+;; ------------------------------------------------------------
+;; pos   相机在世界里的位置
+;; yaw   方位角：绕世界 y 轴、在地面平面里转，以世界 +x 为 0、往 +z 一侧增加
+;; pitch 俯仰角：抬头为正、低头为负
+;; 两个角都用弧度。yaw 起步取 -90°：这时 forward 正好落在 -z 上、朝着原点那堆立方体
+;; （公式见第三节；learnopengl 的相机初始朝向也是 -z）。
+(define pos (vec-3 0.0 0.0 3.0))
+(define yaw (- (/ pi 2.0)))
+(define pitch 0.0)
+
+;; 上一次更新相机状态的时刻（毫秒）。每帧 draw 里用它算 dt。
+(define last-frame-ms (current-inexact-monotonic-milliseconds))
+
+;; 当前正被按住的键：key -> #t。
+;; 按下时写入，松开时删除；draw 每帧只看这个集合，不再依赖系统自动重复。
+(define held (make-hash))
+(define (held? key) (hash-has-key? held key))
+(define (press-key! key) (hash-set! held key #t))
+(define (release-key! key) (hash-remove! held key))
+
+;; 每步的基准量：平移每秒几格、转每秒几弧度。真正走多远还要乘 dt（第四节）。
+(define move-speed 2.5)
+(define turn-speed 1.5)
+
+;; pitch 两端钳在 ±89°。为什么不给 ±90°：到 ±90° 时 forward 竖直、与 up 平行，
+;; look-at 里的 f × up 就退化成零向量，归一化它得 NaN，画面整个崩——7.5 让读者亲手
+;; 撞过一次的退化，真相机就靠这一行把它挡在门外。
+(define pitch-limit (degrees->radians 89.0))
+
+;; ------------------------------------------------------------
+;; 三、欧拉角：由 yaw / pitch 算出 forward 与 right
+;; ------------------------------------------------------------
+;; 把朝向拆成两个角来看：
+;;   yaw   在地面平面里转（绕世界 y 轴），决定朝东南西北哪边
+;;   pitch 抬头 / 低头，决定朝上看还是朝下看
+;; 两个角一合成就是前向单位向量：
+;;   forward = (cos pitch · cos yaw, sin pitch, cos pitch · sin yaw)
+;; cos pitch 同时缩着地面里的两个分量：越抬头，水平分量越小、竖直分量 sin pitch 越大。
+(define (camera-forward)
+  (vec-3 (* (cos pitch) (cos yaw))
+        (sin pitch)
+        (* (cos pitch) (sin yaw))))
+
+;; right 是相机的右手边：forward 与世界的"上" (0,1,0) 叉乘再归一化。
+;; 用世界的上而不是相机的 up，是因为 yaw 只在地面平面里转——这样 right 永远躺在
+;; 地面上，横移（A/D）才不会把人带得上下漂。
+(define (camera-right)
+  (vnormalize (vcross (camera-forward) (vec-3 0.0 1.0 0.0))))
+
+;; ------------------------------------------------------------
+;; 四、键盘输入：按下/松开维护 held，draw 每帧更新
+;; ------------------------------------------------------------
+;; Racket 的键盘是事件推送：按下一次送一次，松开一次送一次。
+;; 我们不需要"每次事件走一步"，而是把事件翻译成状态：
+;;   #:on-key     → (hash-set! held key #t)
+;;   #:on-key-up  → (hash-remove! held key)
+;; 然后 draw 每帧看 held 里有哪些键，乘 dt 更新相机。
+;; 这样长按、组合键（W+D）、松开都自然工作，不依赖操作系统的自动重复。
+(define move-keys (list #\w #\s #\a #\d 'left 'right 'up 'down))
+
+(define (on-key-down key)
+  (when (memq key move-keys)
+    (press-key! key)))
+
+(define (on-key-up key)
+  (when (memq key move-keys)
+    (release-key! key)))
+
+;; 窗口失去焦点时清空 held：否则按住 W 切走窗口，回来时 held 里还留着 W，
+;; 相机会一直往前走（粘键）。
+(define (on-focus on?)
+  (unless on?
+    (hash-clear! held)))
+
+;; draw 每帧调用一次：先算 dt，再按 held 更新位置/朝向。
+(define (update-camera)
+  (define now (current-inexact-monotonic-milliseconds))
+  (define dt (min 0.1 (/ (- now last-frame-ms) 1000.0)))
+  (set! last-frame-ms now)
+
+  ;; 先转身，再按新朝向平移：按着 W + ← 时会边走边转。
+  (define turn (* turn-speed dt))
+  (when (held? 'left)  (set! yaw (- yaw turn)))
+  (when (held? 'right) (set! yaw (+ yaw turn)))
+  (when (held? 'up)    (set! pitch (min pitch-limit (+ pitch turn))))
+  (when (held? 'down)  (set! pitch (max (- pitch-limit) (- pitch turn))))
+
+  (define fwd (camera-forward))
+  (define right (camera-right))
+  (define step (* move-speed dt))
+  (when (held? #\w) (set! pos (vadd pos (vmul fwd step))))
+  (when (held? #\s) (set! pos (vsub pos (vmul fwd step))))
+  (when (held? #\a) (set! pos (vsub pos (vmul right step))))
+  (when (held? #\d) (set! pos (vadd pos (vmul right step)))))
+
+;; ------------------------------------------------------------
+;; 五、棋盘纹理（同 04 课：用代码生成，不依赖图片文件）
+;; ------------------------------------------------------------
+(define tex-size 64)
+(define tex-cell 8)
+
+(define (make-checker-texture size cell)
+  (define px (make-u8-array (* size size 4) 255))
+  (for* ([y (in-range size)] [x (in-range size)])
+    (define on? (even? (+ (quotient x cell) (quotient y cell))))
+    (define i (* (+ (* y size) x) 4))
+    (define r (if on? 230 40))
+    (define g (if on? 140 70))
+    (define b (if on? 60 130))
+    (u8-array-set! px i r)
+    (u8-array-set! px (+ i 1) g)
+    (u8-array-set! px (+ i 2) b)
+    (u8-array-set! px (+ i 3) 255))          ; alpha 不透明
+  px)
+
+;; ------------------------------------------------------------
+;; 六、着色器：三个矩阵串起来（同 camera.rkt）
+;; ------------------------------------------------------------
+;; 顶点连着过三道变换，写成矩阵就是从右往左乘：
+;;   model：把单位立方体摆到世界里的某处
+;;   view ：把世界换进相机坐标——这一次它由 pos / yaw / pitch 算出来
+;;   proj ：把相机看到的视锥投影到 NDC
+(define vert-src
+  (glsl (version 330 core)
+        (layout (location 0) in vec-3 a-pos)
+        (layout (location 1) in vec-2 a-uv)
+        (uniform mat-4 u-model)
+        (uniform mat-4 u-view)
+        (uniform mat-4 u-proj)
+        (out vec-2 v-uv)
+        (define (main) void
+          (set! gl-position (* u-proj (* u-view (* u-model (vec-4 a-pos 1.0)))))
+          (set! v-uv a-uv))))
+
+(define frag-src
+  (glsl (version 330 core)
+        (in vec-2 v-uv)
+        (uniform sampler-2d u-tex)
+        (out vec-4 frag-color)
+        (define (main) void
+          (set! frag-color (texture u-tex v-uv)))))
+
+;; ------------------------------------------------------------
+;; 七、立方体数据：24 个顶点 + 36 索引 + 位置表（同 camera.rkt）
+;; ------------------------------------------------------------
+;; 立方体 6 个面、每面 4 个角，共 24 个顶点。8 个角点本来可以共用，
+;; 但每个面都要贴自己完整的一张纹理，UV 各不相同，所以按面拆开。
+;; 尺寸 ±0.5（边长 1），index 每面 6 个（两个三角形），共 36 个。
+(define vertex-data
+  (concat-vecs
+   ;; 后面 z = -0.5
+   (vec-3 -0.5 -0.5 -0.5) (vec-2 0.0 0.0)
+   (vec-3  0.5 -0.5 -0.5) (vec-2 1.0 0.0)
+   (vec-3  0.5  0.5 -0.5) (vec-2 1.0 1.0)
+   (vec-3 -0.5  0.5 -0.5) (vec-2 0.0 1.0)
+   ;; 前面 z = +0.5
+   (vec-3 -0.5 -0.5  0.5) (vec-2 0.0 0.0)
+   (vec-3  0.5 -0.5  0.5) (vec-2 1.0 0.0)
+   (vec-3  0.5  0.5  0.5) (vec-2 1.0 1.0)
+   (vec-3 -0.5  0.5  0.5) (vec-2 0.0 1.0)
+   ;; 左面 x = -0.5
+   (vec-3 -0.5  0.5  0.5) (vec-2 1.0 0.0)
+   (vec-3 -0.5  0.5 -0.5) (vec-2 1.0 1.0)
+   (vec-3 -0.5 -0.5 -0.5) (vec-2 0.0 1.0)
+   (vec-3 -0.5 -0.5  0.5) (vec-2 0.0 0.0)
+   ;; 右面 x = +0.5
+   (vec-3  0.5  0.5  0.5) (vec-2 1.0 0.0)
+   (vec-3  0.5  0.5 -0.5) (vec-2 1.0 1.0)
+   (vec-3  0.5 -0.5 -0.5) (vec-2 0.0 1.0)
+   (vec-3  0.5 -0.5  0.5) (vec-2 0.0 0.0)
+   ;; 底面 y = -0.5
+   (vec-3 -0.5 -0.5 -0.5) (vec-2 0.0 1.0)
+   (vec-3  0.5 -0.5 -0.5) (vec-2 1.0 1.0)
+   (vec-3  0.5 -0.5  0.5) (vec-2 1.0 0.0)
+   (vec-3 -0.5 -0.5  0.5) (vec-2 0.0 0.0)
+   ;; 顶面 y = +0.5
+   (vec-3 -0.5  0.5 -0.5) (vec-2 0.0 1.0)
+   (vec-3  0.5  0.5 -0.5) (vec-2 1.0 1.0)
+   (vec-3  0.5  0.5  0.5) (vec-2 1.0 0.0)
+   (vec-3 -0.5  0.5  0.5) (vec-2 0.0 0.0)))
+
+(define indices
+  (u16-array 0 3 2   2 1 0          ; 后面
+             4 5 6   6 7 4          ; 前面
+             8 9 10  10 11 8        ; 左面
+             12 14 13 14 12 15      ; 右面
+             16 17 18 18 19 16      ; 底面
+             20 22 21 22 20 23))    ; 顶面
+
+;; 十个立方体在世界里的位置（同 camera.rkt 的散布法：近处零星几个、远处一大片）。
+(define cube-positions
+  (list (vec-3  0.0  0.0   0.0)
+        (vec-3  2.0  5.0 -15.0)
+        (vec-3 -1.5 -2.2  -2.5)
+        (vec-3 -3.8 -2.0 -12.3)
+        (vec-3  2.4 -0.4  -3.5)
+        (vec-3 -1.7  3.0  -7.5)
+        (vec-3  1.3 -2.0  -2.5)
+        (vec-3  1.5  2.0  -2.5)
+        (vec-3  1.5  0.2  -1.5)
+        (vec-3 -1.3  1.0  -1.5)))
+
+(define program #f)
+(define vao #f)
+(define texture #f)
+
+(define (init)
+  (set! program (build-program (gl-vertex-shader vert-src)
+                               (gl-fragment-shader frag-src)))
+
+  ;; ---- 棋盘纹理（同 04 课）----
+  (set! texture (texture-new))
+  (gl-bind-texture gl-texture-2d texture)
+  (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-s gl-repeat)
+  (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-t gl-repeat)
+  (gl-tex-parameter-i gl-texture-2d gl-texture-min-filter gl-linear-mipmap-linear)
+  (gl-tex-parameter-i gl-texture-2d gl-texture-mag-filter gl-linear)
+  (gl-tex-image-2d gl-texture-2d 0 gl-rgba tex-size tex-size 0
+                   gl-rgba gl-unsigned-byte (make-checker-texture tex-size tex-cell))
+  (gl-generate-mipmap gl-texture-2d)
+
+  (program-use program)
+  (uniform-set! (uniform-location program "u_tex") 'sampler-2d 0)
+  (gl-active-texture gl-texture0)
+  (gl-bind-texture gl-texture-2d texture)
+
+  ;; ---- VAO / VBO / EBO ----
+  (set! vao (vertex-array-new))
+  (gl-bind-vertex-array vao)
+
+  (define vbo (buffer-new))
+  (gl-bind-buffer gl-array-buffer vbo)
+  (buffer-upload gl-array-buffer vertex-data gl-static-draw)
+  ;; 步长和偏移都从布局算出来，不写字面量。
+  (define stride (shader-stride-bytes 'vec-3 'vec-2))   ; 3 + 2 = 5 个 float = 20 字节
+  (define uv-offset (shader-byte-size 'vec-3))         ; 跳过位置那 3 个 float = 12 字节
+  (gl-vertex-attrib-pointer 0 3 gl-float #f stride 0)
+  (gl-enable-vertex-attrib-array 0)
+  (gl-vertex-attrib-pointer 1 2 gl-float #f stride uv-offset)
+  (gl-enable-vertex-attrib-array 1)
+
+  (define ebo (buffer-new))
+  (gl-bind-buffer gl-element-array-buffer ebo)
+  (buffer-upload gl-element-array-buffer indices gl-static-draw)
+
+  (gl-bind-vertex-array 0)
+
+  ;; 画立体的东西就得开深度测试，否则后画的近处立方体会盖住先画的远处立方体。
+  (gl-enable gl-depth-test))
+
+(define (draw)
+  ;; 每帧先根据 held 集合更新相机，再算 view / proj 并绘制。
+  (update-camera)
+
+  (gl-clear-color 0.10 0.12 0.20 1.0)
+  ;; 掩码按位或：颜色和深度一起清。
+  (gl-clear (bitwise-ior gl-color-buffer-bit gl-depth-buffer-bit))
+
+  ;; ---- 相机：eye 是键盘改过的 pos，看向"自己前方一格"的点 ----
+  ;; center 取 pos + forward，朝哪看完全由 yaw / pitch 说了算。
+  ;; up 仍是世界的 (0,1,0)：相机不侧倾，头顶永远朝世界正上方。
+  (define view (m-look-at pos (vadd pos (camera-forward)) (vec-3 0.0 1.0 0.0)))
+
+  ;; 投影同 06：竖直视场 45°、aspect 跟着窗口（#:on-size 同步）、近远平面 0.1 / 100。
+  (define proj (m-perspective (degrees->radians 45.0) aspect 0.1 100.0))
+
+  (program-use program)
+  (gl-bind-vertex-array vao)
+
+  ;; view / proj 整帧只算一份，循环外上传一次；model 每个立方体不同，得在循环里传。
+  (uniform-set! (uniform-location program "u_view") 'mat-4 view)
+  (uniform-set! (uniform-location program "u_proj") 'mat-4 proj)
+
+  ;; model 同 camera.rkt：先让立方体转到自己的姿态，再挪到位置；各立方体随时间自转，
+  ;; 于是画面本身也一直在动（相机不动时也有重绘可看）。
+  (define t (/ (current-inexact-monotonic-milliseconds) 1000.0))
+  (for ([cube-pos (in-list cube-positions)])
+    (define model (mat4-mul (m-translate cube-pos)
+                            (mat4-mul (m-rotate-x (* t 0.5))
+                                      (m-rotate-y t))))
+    (uniform-set! (uniform-location program "u_model") 'mat-4 model)
+    (gl-draw-elements gl-triangles 36 gl-unsigned-short 0))
+
+  (gl-bind-vertex-array 0))
+
+(define-values (frame canvas)
+  (make-window #:title "07 相机（连续移动）"
+               #:width win-w
+               #:height win-h
+               #:init init
+               #:draw draw
+               #:on-key on-key-down
+               #:on-key-up on-key-up
+               #:on-focus on-focus
+               ;; 窗口尺寸变了 → 重设 viewport 之后回调这里，把 aspect 一起改掉
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+(send frame show #t)
+;; canvas 得先拿到键盘焦点才收得到按键——这行不能少，且 focus 不带参数
+;; （写 (send canvas focus #t) 会报 arity 错）。
+(send canvas focus)
+
+;; 定时器只负责"每隔 16ms 请求重绘"，绘制永远发生在 draw 里（同 01 课）。
+(define timer
+  (new timer% [interval 16]
+              [notify-callback (lambda () (send canvas refresh))]))
+
+;; ------------------------------------------------------------
+;; 试试看（改完重跑）：
+;;   · 把 on-key-up 里的 (release-key! key) 注释掉：松开后相机会一直走，
+;;     直观看到"只记录按下、不记录松开"的粘键效果——改回来即好
+;;   · 按住 W + D：斜着走
+;;   · 鼠标转视角：canvas 还能接 on-event 拿到鼠标移动事件，把两次事件的位移喂给
+;;     yaw / pitch（pitch 再钳一下）就是第一人称的鼠标视角——思路到此，不展开
+;;   · pitch-limit 改成 (degrees->radians 90.0)：抬头到顶，forward 与 up 平行，
+;;     f × up = 0，画面崩成 NaN（就是 7.5 那个退化）——改回来即好
+;;   · move-speed 从 2.5 改成 25.0：按住 W 一秒就穿出立方体群
+;; ============================================================</code></pre>
+      </div>
+
+      <h2 id="s7-code">完整代码</h2>
+
+      <p><a class="filelink" href="../code.html?f=07-camera/camera.rkt">07-camera/camera.rkt</a>，本课全部代码（直接 <code>racket</code> 跑）：</p>
+
+      <div class="code">
+        <div class="code-title">07-camera/camera.rkt<a class="srclink" href="../code.html?f=07-camera/camera.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">#lang glsl-opengl
+;; ============================================================
+;; 07 · 相机
+;; 运行：racket 07-camera/camera.rkt
+;; 上一课：06-coordinate-systems/coordinates.rkt
+;; ============================================================
+;; 06 课的 view 矩阵是拿 m-translate 把世界往后推 3 格——那等价于"相机钉死在原点、
+;; 永远朝 -z 看"，转不了头。这一课把相机真正做出来：
+;;   ① m-look-at(eye, center, up) 里的 f / s / u 三个基是怎么推出来的
+;;   ② 它凭什么就是"世界 → 相机"的坐标变换
+;;   ③ 让 eye 绕世界原点转圈，同一堆立方体从各个角度看
+;; 立方体那边（顶点数据、位置表、model 的做法）全部沿用 06 课，这一课只换 view。
+;; 相机不是 GPU 对象，只是一个每帧重算、再上传的 mat-4。
+
+(require racket/class
+         racket/gui                     ; timer%
+         racket/math                    ; degrees-&gt;radians
+         "../lib/window.rkt"
+         "../lib/matrix.rkt")           ; m-look-at / m-translate / m-rotate-x / m-perspective
+
+;; ------------------------------------------------------------
+;; 一、窗口尺寸与 aspect
+;; ------------------------------------------------------------
+(define win-w 800)
+(define win-h 600)
+;; aspect 是投影矩阵的参数，必须和窗口的宽高比一致，否则画面被拉伸。
+;; 它是可变的：窗口被拖成别的比例时，#:on-size 回调会把它重算（见文件末尾 make-window）。
+(define aspect (/ win-w win-h))
+
+;; ------------------------------------------------------------
+;; 二、棋盘纹理（同 04 课：用代码生成，不依赖图片文件）
+;; ------------------------------------------------------------
+(define tex-size 64)
+(define tex-cell 8)
+
+(define (make-checker-texture size cell)
+  (define px (make-u8-array (* size size 4) 255))
+  (for* ([y (in-range size)] [x (in-range size)])
+    (define on? (even? (+ (quotient x cell) (quotient y cell))))
+    (define i (* (+ (* y size) x) 4))
+    (define r (if on? 230 40))
+    (define g (if on? 140 70))
+    (define b (if on? 60 130))
+    (u8-array-set! px i r)
+    (u8-array-set! px (+ i 1) g)
+    (u8-array-set! px (+ i 2) b)
+    (u8-array-set! px (+ i 3) 255))          ; alpha 不透明
+  px)
+
+;; ------------------------------------------------------------
+;; 三、着色器：三个矩阵串起来
+;; ------------------------------------------------------------
+;; 顶点要连着过三道变换，写成矩阵就是从右往左乘：
+;;   model：把单位立方体摆到世界里的某处
+;;   view ：把世界换进相机坐标（本课的主角）
+;;   proj ：把相机看到的视锥投影到 NDC
+(define vert-src
+  (glsl (version 330 core)
+        (layout (location 0) in vec-3 a-pos)
+        (layout (location 1) in vec-2 a-uv)
+        (uniform mat-4 u-model)
+        (uniform mat-4 u-view)
+        (uniform mat-4 u-proj)
+        (out vec-2 v-uv)
+        (define (main) void
+          (set! gl-position (* u-proj (* u-view (* u-model (vec-4 a-pos 1.0)))))
+          (set! v-uv a-uv))))
+
+(define frag-src
+  (glsl (version 330 core)
+        (in vec-2 v-uv)
+        (uniform sampler-2d u-tex)
+        (out vec-4 frag-color)
+        (define (main) void
+          (set! frag-color (texture u-tex v-uv)))))
+
+;; ------------------------------------------------------------
+;; 四、立方体数据：24 个顶点 + 36 个索引（同 06 课）
+;; ------------------------------------------------------------
+;; 立方体 6 个面、每面 4 个角，共 24 个顶点。8 个角点本来可以共用，
+;; 但每个面都要贴自己完整的一张纹理，UV 各不相同，所以按面拆开。
+;; 尺寸 ±0.5（边长 1），index 每面 6 个（两个三角形），共 36 个。
+(define vertex-data
+  (concat-vecs
+   ;; 后面 z = -0.5
+   (vec-3 -0.5 -0.5 -0.5) (vec-2 0.0 0.0)
+   (vec-3  0.5 -0.5 -0.5) (vec-2 1.0 0.0)
+   (vec-3  0.5  0.5 -0.5) (vec-2 1.0 1.0)
+   (vec-3 -0.5  0.5 -0.5) (vec-2 0.0 1.0)
+   ;; 前面 z = +0.5
+   (vec-3 -0.5 -0.5  0.5) (vec-2 0.0 0.0)
+   (vec-3  0.5 -0.5  0.5) (vec-2 1.0 0.0)
+   (vec-3  0.5  0.5  0.5) (vec-2 1.0 1.0)
+   (vec-3 -0.5  0.5  0.5) (vec-2 0.0 1.0)
+   ;; 左面 x = -0.5
+   (vec-3 -0.5  0.5  0.5) (vec-2 1.0 0.0)
+   (vec-3 -0.5  0.5 -0.5) (vec-2 1.0 1.0)
+   (vec-3 -0.5 -0.5 -0.5) (vec-2 0.0 1.0)
+   (vec-3 -0.5 -0.5  0.5) (vec-2 0.0 0.0)
+   ;; 右面 x = +0.5
+   (vec-3  0.5  0.5  0.5) (vec-2 1.0 0.0)
+   (vec-3  0.5  0.5 -0.5) (vec-2 1.0 1.0)
+   (vec-3  0.5 -0.5 -0.5) (vec-2 0.0 1.0)
+   (vec-3  0.5 -0.5  0.5) (vec-2 0.0 0.0)
+   ;; 底面 y = -0.5
+   (vec-3 -0.5 -0.5 -0.5) (vec-2 0.0 1.0)
+   (vec-3  0.5 -0.5 -0.5) (vec-2 1.0 1.0)
+   (vec-3  0.5 -0.5  0.5) (vec-2 1.0 0.0)
+   (vec-3 -0.5 -0.5  0.5) (vec-2 0.0 0.0)
+   ;; 顶面 y = +0.5
+   (vec-3 -0.5  0.5 -0.5) (vec-2 0.0 1.0)
+   (vec-3  0.5  0.5 -0.5) (vec-2 1.0 1.0)
+   (vec-3  0.5  0.5  0.5) (vec-2 1.0 0.0)
+   (vec-3 -0.5  0.5  0.5) (vec-2 0.0 0.0)))
+
+(define indices
+  (u16-array 0 3 2   2 1 0          ; 后面
+             4 5 6   6 7 4          ; 前面
+             8 9 10  10 11 8        ; 左面
+             12 14 13 14 12 15      ; 右面
+             16 17 18 18 19 16      ; 底面
+             20 22 21 22 20 23))    ; 顶面
+
+;; 十个立方体在世界里的位置（learnopengl 那套散布法：近处零星几个、远处一大片）。
+;; 同一个位置表在 06 课已经用过一遍，这里原样搬过来。
+(define cube-positions
+  (list (vec-3  0.0  0.0   0.0)
+        (vec-3  2.0  5.0 -15.0)
+        (vec-3 -1.5 -2.2  -2.5)
+        (vec-3 -3.8 -2.0 -12.3)
+        (vec-3  2.4 -0.4  -3.5)
+        (vec-3 -1.7  3.0  -7.5)
+        (vec-3  1.3 -2.0  -2.5)
+        (vec-3  1.5  2.0  -2.5)
+        (vec-3  1.5  0.2  -1.5)
+        (vec-3 -1.3  1.0  -1.5)))
+
+(define program #f)
+(define vao #f)
+(define texture #f)
+
+(define (init)
+  (set! program (build-program (gl-vertex-shader vert-src)
+                               (gl-fragment-shader frag-src)))
+
+  ;; ---- 棋盘纹理（同 04 课）----
+  (set! texture (texture-new))
+  (gl-bind-texture gl-texture-2d texture)
+  (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-s gl-repeat)
+  (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-t gl-repeat)
+  (gl-tex-parameter-i gl-texture-2d gl-texture-min-filter gl-linear-mipmap-linear)
+  (gl-tex-parameter-i gl-texture-2d gl-texture-mag-filter gl-linear)
+  (gl-tex-image-2d gl-texture-2d 0 gl-rgba tex-size tex-size 0
+                   gl-rgba gl-unsigned-byte (make-checker-texture tex-size tex-cell))
+  (gl-generate-mipmap gl-texture-2d)
+
+  (program-use program)
+  (uniform-set! (uniform-location program "u_tex") 'sampler-2d 0)
+  (gl-active-texture gl-texture0)
+  (gl-bind-texture gl-texture-2d texture)
+
+  ;; ---- VAO / VBO / EBO ----
+  (set! vao (vertex-array-new))
+  (gl-bind-vertex-array vao)
+
+  (define vbo (buffer-new))
+  (gl-bind-buffer gl-array-buffer vbo)
+  (buffer-upload gl-array-buffer vertex-data gl-static-draw)
+  ;; 步长和偏移都从布局算出来，不写字面量。
+  (define stride (shader-stride-bytes 'vec-3 'vec-2))   ; 3 + 2 = 5 个 float = 20 字节
+  (define uv-offset (shader-byte-size 'vec-3))         ; 跳过位置那 3 个 float = 12 字节
+  (gl-vertex-attrib-pointer 0 3 gl-float #f stride 0)
+  (gl-enable-vertex-attrib-array 0)
+  (gl-vertex-attrib-pointer 1 2 gl-float #f stride uv-offset)
+  (gl-enable-vertex-attrib-array 1)
+
+  (define ebo (buffer-new))
+  (gl-bind-buffer gl-element-array-buffer ebo)
+  (buffer-upload gl-element-array-buffer indices gl-static-draw)
+
+  (gl-bind-vertex-array 0)
+
+  ;; ★一开始画立体的东西就得开深度测试：谁在前、谁被挡住由深度缓冲裁决，
+  ;;   否则后画的近处立方体会盖住先画的远处立方体。
+  (gl-enable gl-depth-test))
+
+(define (draw)
+  (gl-clear-color 0.10 0.12 0.20 1.0)
+  ;; 掩码按位或：颜色和深度一起清。只清颜色的话，上一帧的深度值还留在缓冲里，
+  ;; 这一帧的遮挡判断就全错了。
+  (gl-clear (bitwise-ior gl-color-buffer-bit gl-depth-buffer-bit))
+
+  ;; ---- 相机：绕着世界原点转圈 ----
+  ;; eye 在半径 3、高 1.2 的圆上走：t 每秒转 0.5 弧度，转一圈约 12.6 秒。
+  ;; y 固定 1.2 是让相机略高于目标（原点），于是有一点俯视感，看得到立方体顶面。
+  (define t (/ (current-inexact-monotonic-milliseconds) 1000.0))
+  (define eye (vec-3 (* 3.0 (cos (* t 0.5))) 1.2 (* 3.0 (sin (* t 0.5)))))
+  ;; 每帧重算：eye 在动，view 就得跟着动。
+  ;; center 是相机看的目标；up 只说"头顶朝哪"，长度无所谓（look-at 会归一化）。
+  (define view (m-look-at eye (vec-3 0.0 0.0 0.0) (vec-3 0.0 1.0 0.0)))
+
+  ;; 投影同 06：竖直视场 45°、aspect 与窗口同源、近远平面 0.1 / 100。
+  (define proj (m-perspective (degrees-&gt;radians 45.0) aspect 0.1 100.0))
+
+  (program-use program)
+  (gl-bind-vertex-array vao)
+
+  ;; view / proj 整帧只算一份，循环外上传一次；model 每个立方体不同，得在循环里传。
+  ;; mat-4 是列主序的 f32vector，和 uniform 的布局一致，所以 transpose 传 #f。
+  (uniform-set! (uniform-location program "u_view") 'mat-4 view)
+  (uniform-set! (uniform-location program "u_proj") 'mat-4 proj)
+
+  (for ([pos (in-list cube-positions)])
+    ;; model = 平移 × 绕 x 自转 × 绕 y 自转：先让立方体转到自己的姿态，再挪到位置。
+    ;; 组合顺序从右往左作用在顶点上；把平移写在右边的话，立方体会被旋转甩出去。
+    (define model (mat4-mul (m-translate pos)
+                            (mat4-mul (m-rotate-x (* t 0.5))
+                                      (m-rotate-y t))))
+    (uniform-set! (uniform-location program "u_model") 'mat-4 model)
+    ;; 一个立方体 36 个索引：24 个顶点、6 个面、每面 6 个索引。
+    (gl-draw-elements gl-triangles 36 gl-unsigned-short 0))
+
+  (gl-bind-vertex-array 0))
+
+(define-values (frame canvas)
+  (make-window #:title "07 相机"
+               #:width win-w
+               #:height win-h
+               #:init init
+               #:draw draw
+               ;; 窗口尺寸变了 → 重设 viewport 之后回调这里，把 aspect 一起改掉
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+(send frame show #t)
+
+;; 定时器只负责"每隔 16ms 请求重绘"，绘制永远发生在 draw 里（同 01 课）。
+(define timer
+  (new timer% [interval 16]
+              [notify-callback (lambda () (send canvas refresh))]))
+
+;; ------------------------------------------------------------
+;; 试试看（改完重跑）：
+;;   · center 改成 eye 正下方、或 up 改成 (0,0,0) → f 与 up 平行，叉积为 0，
+;;     normalize 零向量得 NaN，画面整个崩掉（原因见 7.5）
+;;   · 半径 3.0 改成 1.0 → 立方体群冲出视野，被近平面 0.1 裁掉
+;;   · up 改成 (0,0,1) → u 轴换了个方向，画面"躺倒"
+;; ============================================================
+</code></pre>
+      </div>
+
+      <h2 id="s7-exercise">试试看</h2>
+
+      <ol class="exercise">
+        <li>让它崩一次：把 <code>up</code> 改成 <code>(vec-3 0.0 0.0 0.0)</code>，或者把 eye 挪到目标正上方（<code>(vec-3 0.0 3.0 0.0)</code>），这时 f 与 up 平行、<code>f × up = 0</code>。跑起来什么都看不到，终端每帧一条 <code>vec-normalize: 零向量不能归一化</code>——这就是 7.5 说的退化。</li>
+        <li>自由相机见 <a href="#s7-6">7.6</a>：跑 <code>racket 07-camera/camera-walk.rkt</code>，长按 W 应该立即、平滑地一直走；再按住 W+D 斜着走。把 <code>on-key-up</code> 里的 <code>release-key!</code> 注释掉，松开后相机会一直走——这就是"只记录按下、不记录松开"的粘键。</li>
+        <li>鼠标视角：canvas 还能接 <code>on-event</code> 拿到鼠标移动事件，把两次事件的偏移量喂给 <code>yaw</code> / <code>pitch</code>（pitch 记得再钳一下）就是第一人称的鼠标视角。思路到此，不展开代码。</li>
+        <li>把 <code>pitch</code> 的钳制从 ±89° 改成 ±90°：抬头到顶，<code>forward</code> 与 <code>up</code> 平行、<code>f × up = 0</code>，画面崩成 NaN（就是 7.5 那个退化）；改回 89° 即好。</li>
+        <li>把半径 <code>3.0</code> 改成 <code>1.0</code>：相机整个陷进立方体群中间，视角只剩眼前那个立方体的大面，其余立方体都跑到视野外（实测截图里只看得见一块被斜看的正面加一个角）。</li>
+        <li>把 <code>up</code> 改成 <code>(vec-3 0.0 0.0 1.0)</code>：画面整体"躺倒"。u 换了方向，相机坐标系的 y 轴跟着换，世界看起来就是侧翻的——它没崩，还是能画，只是"上"不再是你以为的那个上。</li>
+      </ol>
+
+      <h2 id="s7-summary">小结</h2>
+
+      <table class="spec">
+        <thead>
+          <tr>
+            <th>概念</th>
+            <th>一句话</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>观察空间</td>
+            <td>以相机为原点、相机朝 -z 看的坐标系；view 矩阵把世界坐标换进它</td>
+          </tr>
+          <tr>
+            <td>f / s / u 三基</td>
+            <td><code>f = normalize(center - eye)</code>、<code>s = normalize(f × up)</code>、<code>u = s × f</code>；三者正交，就是相机坐标系的 x / y / z（z 朝 <code>-f</code>）</td>
+          </tr>
+          <tr>
+            <td>view = 旋转 + 平移</td>
+            <td>前三列把 s / u / -f 对齐到 x / y / z，第四列把 eye 抹掉；不求逆矩阵，直接构造</td>
+          </tr>
+          <tr>
+            <td>up 退化</td>
+            <td>f 与 up 平行时 <code>f × up = 0</code>，归一化零向量无定义：GLSL 里是 NaN，本教程的 <code>vnormalize</code> 直接抛错，画面什么都画不出来</td>
+          </tr>
+          <tr>
+            <td>与 06 的关系</td>
+            <td><code>m-look-at</code> eye 取 <code>(0,0,3)</code>、center 取原点、up 取 <code>(0,1,0)</code> 时，逐元素等于 <code>m-translate (0,0,-3)</code>——06 的凑合 view 是 look-at 的特例</td>
+          </tr>
+          <tr>
+            <td>每帧重算</td>
+            <td>eye 在动，view 就每帧重算；view / proj 全场共用传一次，model 每个物体各传一次</td>
+          </tr>
+          <tr>
+            <td>自由相机</td>
+            <td><code>#:on-key</code> / <code>#:on-key-up</code> 维护 <code>held</code> 集合，每帧读状态并按 delta time 更新；yaw / pitch 欧拉角，pitch 钳 ±89° 挡住退化</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>Getting started 这一章到这里收尾：从开一扇窗口、画一个三角形，到纹理、变换、坐标系，最后把相机交到 eye / center / up 三个值手上。想组装成一个能用键盘到处走的完整场景，把 05–07 三节的代码合起来就行——变换管摆放、坐标系管投影、相机管视角；7.6 的按键状态让移动真正连续。<a class="filelink" href="../index.html">回课程首页看目录</a>。</p>
+
+      <p>下一章 Lighting 从 08 颜色开始：讲光与物的颜色怎么相乘，再到光照模型与多光源。</p>
+
+          <div class="note key">
+        <p><b>复习</b><a href="../review/02-matrices/index.html">复习 02 · 矩阵与计算位置</a>。读完 05–07，建议做一遍矩阵复习：同一套 MVP 公式，在 CPU 和 GPU 上分别怎么算、数据怎么流。</p>
+      </div>
+
+</main>
+
+    <nav class="toc">
+      <b>本节目录</b>
+      <ol>
+        <li><a href="#s7-1">7.1 相机是什么</a></li>
+        <li><a href="#s7-2">7.2 look-at 的三基推导</a></li>
+        <li><a href="#s7-3">7.3 view 矩阵长什么样</a></li>
+        <li><a href="#s7-4">7.4 绕圈动画</a></li>
+        <li><a href="#s7-5">7.5 up 向量与退化</a></li>
+        <li><a href="#s7-6">7.6 自由相机</a></li>
+        <li><a href="#s7-code">完整代码</a></li>
+        <li><a href="#s7-exercise">试试看</a></li>
+        <li><a href="#s7-summary">小结</a></li>
+      </ol>
+    </nav>
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="../06-coordinate-systems/index.html">← 06 坐标系</a>
+    <a class="next" href="../08-colors/index.html">08 颜色 →</a>
+  </nav>
+
+  <footer class="site-footer">
+    <p>本教程参照 learnopengl.com 的章节节奏，代码用 racket-shader 写。纯静态站，源码可在浏览器里直接查看。</p>
+  </footer>
+
+</div>
+</body>
+</html>

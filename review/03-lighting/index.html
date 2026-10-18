@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>复习 03 · 光照：CPU 还是 GPU — study-opengl</title>
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/highlight.js" defer></script>
+</head>
+<body>
+<div class="page">
+
+  <header class="site-header">
+    <a class="site-title" href="../../index.html">study-opengl</a>
+    <nav class="crumbs"><a href="../../index.html">课程</a> / <span>复习 03 · 光照：CPU 还是 GPU</span></nav>
+  </header>
+
+  <div class="layout">
+    <main class="content">
+
+      <h1>复习 03 · 光照：CPU 还是 GPU</h1>
+
+      <p class="goal">目标：把 08–11 的 Phong 公式在 CPU 上算一遍，再对照片元着色器里的同一套公式。重点是看清「逐顶点 / 逐片元 / 离线烘焙」三种计算位置，而不是死记 API。</p>
+
+      <div class="run"><span class="prompt">$</span> racket review/03-lighting/lighting-review.rkt</div>
+
+      <h2 id="r3-1">R3.1 公式</h2>
+
+      <p><code>ambient = 0.15</code></p>
+      <p><code>diffuse = max(dot(n, l), 0)</code></p>
+      <p><code>specular = pow(max(dot(v, r), 0), 32) · 0.4</code></p>
+      <p><code>color = (ambient + diffuse + specular) · lightColor · objectColor</code></p>
+
+      <div class="code">
+        <div class="code-title">review/03-lighting/lighting-review.rkt（摘录）<a class="srclink" href="../../code.html?f=review/03-lighting/lighting-review.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">(define n (vnormalize normal))
+(define l (vnormalize (vsub light-pos frag-pos)))
+(define v (vnormalize (vsub view-pos frag-pos)))
+(define r (vreflect (vneg l) n))
+
+(define ambient 0.15)
+(define diff (max (vdot n l) 0.0))
+(define spec (* (expt (max (vdot v r) 0.0) 32.0) 0.4))
+(define color (vmul (vmul light-color (+ ambient diff spec)) object-color))</code></pre>
+      </div>
+
+      <h2 id="r3-2">R3.2 计算放在哪</h2>
+
+      <table class="spec">
+        <thead><tr><th>做法</th><th>在哪算</th><th>特点</th></tr></thead>
+        <tbody>
+          <tr><td>Gouraud（逐顶点）</td><td>CPU 或顶点着色器</td><td>每顶点算一次，三角形内部插值颜色；高光容易糊</td></tr>
+          <tr><td>Phong（逐片元）</td><td>片元着色器</td><td>每像素算一次；高光清晰，成本随像素数增长</td></tr>
+          <tr><td>lightmap / 顶点色</td><td>CPU 离线烘焙</td><td>运行时只采样；适合静态光照，不适合动态灯</td></tr>
+        </tbody>
+      </table>
+
+      <p>GPU 不是唯一选择，但它是「动态、逐像素、数据量大」时最自然的选择。CPU 逐顶点或预烘焙在静态场景里更便宜，也更容易调试。</p>
+
+      <div class="note key">
+        <p><b>一句话</b>API 只负责把 uniform、normal、frag-pos 送进 shader 并启动绘制；到底逐顶点还是逐片元算，是你选择的<b>计算位置</b>。</p>
+      </div>
+
+
+    </main>
+
+    <nav class="toc">
+      <b>本节目录</b>
+      <ol>
+        <li><a href="#r3-1">R3.1 公式</a></li>
+        <li><a href="#r3-2">R3.2 计算放在哪</a></li>
+      </ol>
+    </nav>
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="../02-matrices/index.html">← 复习 02 矩阵</a>
+    <a class="next" href="../../12-multiple-lights/index.html">12 多光源 →</a>
+  </nav>
+
+  <footer class="site-footer">
+    <p>本教程参照 learnopengl.com 的章节节奏，代码用 racket-shader 写。纯静态站，源码可在浏览器里直接查看。</p>
+  </footer>
+
+</div>
+</body>
+</html>

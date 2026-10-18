@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>15 · 精灵图与 HD 3D 场景 — study-opengl</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/highlight.js" defer></script>
+</head>
+<body>
+<div class="page">
+
+  <header class="site-header">
+    <a class="site-title" href="../index.html">study-opengl</a>
+    <nav class="crumbs"><span>课程</span> / <span>15 · 精灵图与 HD 3D 场景</span></nav>
+  </header>
+
+  <div class="layout">
+    <main class="content">
+
+      <h1>精灵图与 HD 3D 场景</h1>
+
+      <p class="goal">本节目标：把一张 4×4 的精灵图（sprite sheet）加载进来，用帧号算出这一帧在图集里的 UV，再把精灵做成 billboard 放进一个 1280×720 的 3D 场景。场景里有渐变天空、程序化网格地面、Utah Teapot，以及 12 个叠加发光的 λ 符印。跑起来应该看到茶壶缓慢旋转，周围一圈彩色光符一边绕行一边播放 16 帧动画。</p>
+
+      <div class="run"><span class="prompt">$</span> racket 15-sprite-atlas/sprite-atlas.rkt</div>
+
+      <div class="note key">
+        <p><b>计算位置</b>精灵图 PNG 的读取、上传、场景矩阵和相机在 CPU；图集 UV、纹理采样、billboard 变换、加法混合在 GPU。数据流：PNG → CPU 字节 → texture → 片元 UV 采样 → 加法混合 → 屏幕。</p>
+      </div>
+
+      <figure class="figure">
+        <img src="sprite-atlas-1280x720.png" width="1280" height="720"
+             alt="1280×720 的 3D 场景：网格地面、旋转的茶壶和环绕的彩色发光精灵">
+        <figcaption class="figcaption">图 15-1 1280×720 + 4× MSAA：茶壶、网格地面和 12 个精灵 billboard</figcaption>
+      </figure>
+
+      <h2 id="s15-1">15.1 精灵图是什么</h2>
+
+      <p>精灵图（sprite sheet，也叫 texture atlas）把动画的每一帧排进同一张图。本课的图是 4 列 × 4 行、每帧 256×256、总共 16 帧：</p>
+
+      <pre><code>+------+------+------+------+
+|  0   |  1   |  2   |  3   |   ← 帧 0 在左上角
++------+------+------+------+
+|  4   |  5   |  6   |  7   |
++------+------+------+------+
+|  8   |  9   |  10  |  11  |
++------+------+------+------+
+|  12  |  13  |  14  |  15  |
++------+------+------+------+</code></pre>
+
+      <p>为什么不用 16 张单独的 PNG？因为一张图集只要一次 <code>gl-bind-texture</code> 就能画完所有帧，draw call 也更容易合批。代价是采样时要自己把局部 UV <code>0..1</code> 映射到某一格的 UV 范围。</p>
+
+      <table class="spec">
+        <thead><tr><th>概念</th><th>本课的值</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>图集尺寸</td><td>1024×1024</td><td>整张 PNG 的像素尺寸</td></tr>
+          <tr><td>网格</td><td>4 列 × 4 行</td><td><code>cols</code> / <code>rows</code></td></tr>
+          <tr><td>单帧尺寸</td><td>256×256</td><td>图集尺寸 ÷ 网格</td></tr>
+          <tr><td>帧数</td><td>16</td><td><code>cols × rows</code></td></tr>
+          <tr><td>帧号</td><td>0..15</td><td>从左上角开始、按行优先</td></tr>
+        </tbody>
+      </table>
+
+      <p>图集本身也是 CPU 用 <code>racket/draw</code> 画出来的：<a class="filelink" href="../code.html?f=assets/sprites/make-sprites.rkt">assets/sprites/make-sprites.rkt</a> 生成一个透明的 λ 符印，射线旋转、核心呼吸、外圈脉冲。想改颜色或帧数，直接改它再重跑。</p>
+
+      <h2 id="s15-2">15.2 加载精灵图</h2>
+
+      <p>加载流程和普通纹理一样，只是最后多记住“网格是几列几行”。代码收在 <a class="filelink" href="../code.html?f=lib/sprite-sheet.rkt">lib/sprite-sheet.rkt</a>：</p>
+
+      <div class="code">
+        <div class="code-title">lib/sprite-sheet.rkt：PNG → GL 纹理<a class="srclink" href="../code.html?f=lib/sprite-sheet.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">(define bmp (read-bitmap path))
+(define w (send bmp get-width))
+(define h (send bmp get-height))
+(define argb (make-bytes (* w h 4)))
+(send bmp get-argb-pixels 0 0 w h argb)
+(define rgba (flip-rows (argb->rgba argb w h) w h))
+
+(define id (texture-new))
+(gl-bind-texture gl-texture-2d id)
+(gl-pixel-store-i gl-unpack-alignment 1)
+(gl-tex-parameter-i gl-texture-2d gl-texture-wrap-s gl-clamp-to-edge)
+(gl-tex-parameter-i gl-texture-2d gl-texture-wrap-t gl-clamp-to-edge)
+(gl-tex-parameter-i gl-texture-2d gl-texture-min-filter gl-linear)
+(gl-tex-parameter-i gl-texture-2d gl-texture-mag-filter gl-linear)
+(gl-tex-image-2d gl-texture-2d 0 gl-rgba w h 0
+                 gl-rgba gl-unsigned-byte rgba)</code></pre>
+      </div>
+
+      <p>三个细节：</p>
+
+      <ul>
+        <li><b>字节序</b>：<code>get-argb-pixels</code> 给的是 A,R,G,B，而 <code>gl-tex-image-2d</code> 要 R,G,B,A，所以先重排。</li>
+        <li><b>行序</b>：位图的 <code>(0,0)</code> 在左上角，OpenGL 纹理的 <code>(0,0)</code> 在左下角，所以默认把行倒过来。下一节的“行号翻转”就是这个决定的另一半。</li>
+        <li><b>不生成 mipmap</b>：图集里相邻帧挨得很近，mipmap 会把隔壁帧混进来，边缘出现“串帧”。精灵通常离相机不远，线性过滤就够。</li>
+      </ul>
+
+      <p>加载完得到的是一个 <code>sprite-sheet</code> 结构：纹理 id、整图宽高、列数行数、单帧宽高，以及 <code>frame-count</code>。本节后面的代码只用到其中的 id、列数、行数和帧数。</p>
+
+      <h2 id="s15-3">15.3 帧号 → UV</h2>
+
+      <p>顶点上的 UV 是<b>单帧内部</b>的 <code>0..1</code>。片元要先把它挪到某一格的范围内。设帧号 <code>f</code>、列数 <code>C</code>、行数 <code>R</code>：</p>
+
+      <pre><code>col    = f mod C
+rowTop = floor(f / C)          ; 从 PNG 顶部往下数
+row    = R - 1 - rowTop        ; GL 的 v=0 在底部，所以翻过来
+uv     = (vec2(col, row) + v_uv) / vec2(C, R)</code></pre>
+
+      <p>把它写进片元着色器，就是本课最核心的几行：</p>
+
+      <div class="code">
+        <div class="code-title">15-sprite-atlas/sprite-atlas.rkt：图集 UV<a class="srclink" href="../code.html?f=15-sprite-atlas/sprite-atlas.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">(uniform float u-frame)             ; 0..15
+(uniform float u-cols)              ; 4
+(uniform float u-rows)              ; 4
+
+(float col (mod u-frame u-cols))
+(float row-top (floor (/ u-frame u-cols)))
+(float row (- u-rows 1.0 row-top))
+(vec-2 cell (vec-2 (/ 1.0 u-cols) (/ 1.0 u-rows)))
+(vec-2 uv (* (vec-2 (+ col (x v-uv)) (+ row (y v-uv))) cell))
+
+(vec-4 tex (texture u-atlas uv))</code></pre>
+      </div>
+
+      <p>如果忘了 <code>row = R - 1 - rowTop</code>，动画会从下往上倒着播，而且每一帧上下颠倒。这个坑和 04 课“真实图片要不要翻行序”是同一个问题，只是这里翻的是<b>行号</b>，不是像素行。</p>
+
+      <div class="note key">
+        <p><b>关键点</b>精灵动画不需要每帧换纹理，也不需要重新上传像素；只改一个 <code>u-frame</code> uniform，采样位置就换了。16 帧共用一张纹理、一个 VAO、一个 draw call 模板。</p>
+      </div>
+
+      <h2 id="s15-4">15.4 把精灵放进 3D：billboard</h2>
+
+      <p>精灵是一个单位四边形（局部 XY 平面）。如果直接给它一个普通 model 矩阵，它会跟着物体转，转到侧面就看不见了。3D 场景里的精灵通常用 <b>billboard</b>：四边形永远面向相机。</p>
+
+      <p>做法是从相机取三个基向量：</p>
+
+      <pre><code>forward = normalize(target - eye)
+right   = normalize(cross(forward, worldUp))
+up      = cross(right, forward)
+normal  = cross(right, up)        ; 指向相机</code></pre>
+
+      <p>然后把 <code>right / up / normal</code> 乘上尺寸，写进 model 矩阵的三列，最后一列放精灵的世界位置：</p>
+
+      <div class="code">
+        <div class="code-title">15-sprite-atlas/sprite-atlas.rkt：billboard 的 model 矩阵<a class="srclink" href="../code.html?f=15-sprite-atlas/sprite-atlas.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">(define model
+  (mat-4 (vec-4 (* (vx right) size) (* (vy right) size) (* (vz right) size) 0.0)
+         (vec-4 (* (vx up) size)    (* (vy up) size)    (* (vz up) size)    0.0)
+         (vec-4 (vx normal)         (vy normal)         (vz normal)         0.0)
+         (vec-4 (vx center)         (vy center)         (vz center)         1.0)))</code></pre>
+      </div>
+
+      <p>顶点着色器仍然是普通的 <code>proj · view · model · pos</code>。所以 billboard 没有新公式，只是 model 矩阵的基向量换了：不再用物体的局部轴，而是用相机的屏幕轴。</p>
+
+      <h2 id="s15-5">15.5 HD 场景：分辨率、MSAA 和混合</h2>
+
+      <p>“HD”在本课不只是把窗口开大，而是四件事一起做：</p>
+
+      <table class="spec">
+        <thead><tr><th>做法</th><th>本课的值</th><th>作用</th></tr></thead>
+        <tbody>
+          <tr><td>窗口分辨率</td><td>1280×720</td><td>720p，画面和字体更细</td></tr>
+          <tr><td>MSAA</td><td><code>#:multisample 4</code></td><td>4× 多重采样，压掉网格和精灵边缘的锯齿</td></tr>
+          <tr><td>精灵图分辨率</td><td>1024×1024（单帧 256）</td><td>放大到屏幕上也够清晰</td></tr>
+          <tr><td>过滤</td><td><code>gl-linear</code></td><td>精灵缩放时平滑取像素</td></tr>
+        </tbody>
+      </table>
+
+      <p><code>make-window</code> 新增了可选的 <code>#:multisample</code>，默认 0，不影响前面的课；本课传 4。<code>lib/window.rkt</code> 里只是把它交给 <code>gl-config%</code> 的 <code>set-multisample-size</code>。</p>
+
+      <p>场景由四层组成，绘制顺序很重要：</p>
+
+      <table class="spec">
+        <thead><tr><th>顺序</th><th>画什么</th><th>深度</th><th>混合</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>渐变天空（全屏四边形）</td><td>测试关、写入关</td><td>无</td></tr>
+          <tr><td>2</td><td>网格地面</td><td>测试开、写入开</td><td>无</td></tr>
+          <tr><td>3</td><td>茶壶（Phong + 边缘光）</td><td>测试开、写入开</td><td>无</td></tr>
+          <tr><td>4</td><td>精灵 billboard</td><td>测试开、写入关</td><td>加法混合</td></tr>
+        </tbody>
+      </table>
+
+      <p>精灵的混合方式是：</p>
+
+      <div class="code">
+        <div class="code-title">15-sprite-atlas/sprite-atlas.rkt：发光精灵的混合状态<a class="srclink" href="../code.html?f=15-sprite-atlas/sprite-atlas.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">(gl-enable gl-blend)
+(gl-blend-func gl-src-alpha gl-one)     ; 加法混合：光叠加，不会把背景压暗
+(gl-depth-mask #f)                      ; 精灵不写深度，避免透明边缘互相遮挡</code></pre>
+      </div>
+
+      <p><code>gl-src-alpha / gl-one</code> 的结果是 <code>src.rgb * src.a + dst.rgb</code>：精灵的亮部直接加到背景上，看起来像发光。透明区域 <code>src.a = 0</code>，加了个零，不会留下黑框。深度测试仍然开着，所以茶壶会正确挡住它后面的精灵；深度写入关掉，精灵之间不会互相切出硬边。</p>
+
+      <p>天空是一个全屏四边形，顶点直接输出 NDC 坐标，片元按 <code>v-uv.y</code> 混合上下两种颜色，再在地平线附近加一点辉光。地面是一个 120×120 的四边形，片元用世界坐标 <code>p.xz</code> 的 <code>fract</code> 画网格，并让远处淡出到天空色，避免地面边缘出现一条硬线。</p>
+
+      <div class="note key">
+        <p><b>关键点</b>HD 场景不是靠某一个“高级 API”，而是把已经学过的几件事叠起来：高分辨率窗口 + MSAA、正确的深度和混合顺序、图集 UV、billboard 矩阵、以及程序化天空/地面。每一项都在前面章节出现过，这一课只是把它们组合成一个完整画面。</p>
+      </div>
+
+      <h2 id="s15-code">完整代码</h2>
+
+      <p><a class="filelink" href="../code.html?f=15-sprite-atlas/sprite-atlas.rkt">15-sprite-atlas/sprite-atlas.rkt</a>，本课全部代码（直接 <code>racket</code> 跑）。精灵图是 <a class="filelink" href="../assets/sprites/racket-sigil.png">assets/sprites/racket-sigil.png</a>，加载器是 <a class="filelink" href="../code.html?f=lib/sprite-sheet.rkt">lib/sprite-sheet.rkt</a>。</p>
+
+      <h2 id="s15-exercise">试试看</h2>
+
+      <ol class="exercise">
+        <li>把 <code>sprite-cols</code> / <code>sprite-rows</code> 改成 <code>2</code> / <code>2</code>，再换一张 2×2 的图：帧数、UV 格子、动画都会跟着变。注意 <code>sprite-sheet-frame-count</code> 也会变成 4。</li>
+        <li>把 <code>gl-blend-func</code> 改成 <code>gl-src-alpha</code> / <code>gl-one-minus-src-alpha</code>：精灵从“发光”变成普通透明贴纸，颜色会暗很多。</li>
+        <li>把 <code>gl-depth-mask #f</code> 改成 <code>#t</code>：精灵开始写深度，多个精灵前后重叠时会互相遮挡，光环前后关系变硬。</li>
+        <li>把 <code>sprite-count</code> 从 12 改成 32：draw call 变多，但纹理只绑定一次——正好对比“多张单独 PNG”和“一张图集”的成本。</li>
+        <li>把 <code>#:multisample 4</code> 改成 <code>0</code>：地面网格和精灵边缘会出现锯齿，能直观看到 MSAA 在做什么。</li>
+        <li>把 <code>u-frame</code> 的计算改成 <code>(modulo (- (inexact->exact (floor (* t 12.0))) (* i 3)) ...)</code>：动画方向反过来，验证帧号确实只是一个普通 uniform。</li>
+      </ol>
+
+      <h2 id="s15-summary">小结</h2>
+
+      <table class="spec">
+        <thead><tr><th>概念</th><th>一句话</th></tr></thead>
+        <tbody>
+          <tr><td>精灵图 / 图集</td><td>多帧排在同一张纹理里，一次绑定、一次 draw call 模板就能画很多精灵</td></tr>
+          <tr><td>图集 UV</td><td><code>uv = (vec2(col,row) + 局部UV) / vec2(cols,rows)</code>；PNG 顶行到 GL 底行要翻 <code>row</code></td></tr>
+          <tr><td>动画</td><td>只改 <code>u-frame</code>，不换纹理、不重传像素</td></tr>
+          <tr><td>billboard</td><td>model 矩阵用相机的 <code>right / up / normal</code> 做基向量，四边形永远面向相机</td></tr>
+          <tr><td>加法混合</td><td><code>gl-src-alpha / gl-one</code> 把精灵亮部加到背景上，做出发光效果</td></tr>
+          <tr><td>HD 场景</td><td>1280×720 + 4× MSAA + 高分辨率图集 + 正确深度/混合顺序</td></tr>
+        </tbody>
+      </table>
+
+      <div class="note key">
+        <p><b>复习</b><a href="../review/01-api-flow/index.html">复习 01 · API 与数据流</a>。精灵图这一课把“传数据 / 设状态 / 启动计算”又走了一遍：PNG 是数据，UV/混合/深度是状态，<code>gl-draw-elements</code> 启动计算。</p>
+      </div>
+
+    </main>
+
+    <nav class="toc">
+      <b>本节目录</b>
+      <ol>
+        <li><a href="#s15-1">15.1 精灵图是什么</a></li>
+        <li><a href="#s15-2">15.2 加载精灵图</a></li>
+        <li><a href="#s15-3">15.3 帧号 → UV</a></li>
+        <li><a href="#s15-4">15.4 billboard</a></li>
+        <li><a href="#s15-5">15.5 HD 场景</a></li>
+        <li><a href="#s15-code">完整代码</a></li>
+        <li><a href="#s15-exercise">试试看</a></li>
+        <li><a href="#s15-summary">小结</a></li>
+      </ol>
+    </nav>
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="../14-model-loading/index.html">← 14 模型加载</a>
+    <a class="next" href="../index.html">回到目录 →</a>
+  </nav>
+
+  <footer class="site-footer">
+    <p>本教程参照 learnopengl.com 的章节节奏，代码用 racket-shader 写。纯静态站，源码可在浏览器里直接查看。</p>
+  </footer>
+
+</div>
+</body>
+</html>

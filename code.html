@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>源码 — study-opengl</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/highlight.js" defer></script>
+</head>
+<body>
+<div class="page">
+
+  <header class="site-header">
+    <a class="site-title" href="index.html">study-opengl</a>
+    <nav class="crumbs"><a id="back" href="index.html">课程</a> / <span id="crumb">源码</span></nav>
+  </header>
+
+  <main class="content">
+
+    <h1 id="fname">源码</h1>
+    <p class="goal" id="status">正在读取…</p>
+
+    <div class="note warn" id="error" hidden>
+      <p id="errmsg"></p>
+    </div>
+
+    <div class="code" id="codebox" hidden>
+      <div class="code-title"><span id="codetitle"></span><a id="raw" class="srclink" href="#">下载 ↗</a></div>
+      <pre><code id="code" class="lang-racket"></code></pre>
+    </div>
+
+  </main>
+
+  <footer class="site-footer">
+    <p>源码查看页：只读展示，运行请在本机执行 <code>racket 路径/文件.rkt</code>。</p>
+  </footer>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  function $(id) { return document.getElementById(id); }
+
+  var fname = $('fname'), crumb = $('crumb'), status = $('status');
+  var box = $('codebox'), code = $('code'), codetitle = $('codetitle');
+  var raw = $('raw'), errorBox = $('error'), errmsg = $('errmsg');
+  var back = $('back');
+
+  function escapeHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function showError(msg) {
+    status.hidden = true;
+    box.hidden = true;
+    errmsg.textContent = msg;
+    errorBox.hidden = false;
+  }
+
+  /* 只接受仓库内的相对路径，且必须是 .rkt：
+     code.html?f=01-window/window.rkt —— 不允许 ".."、绝对路径、协议前缀。 */
+  function safePath(p) {
+    if (!p || p.charAt(0) === '/' || /^[a-z][a-z0-9+.-]*:/i.test(p)) {
+      return null;
+    }
+    var parts = p.split('/');
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i] === '' || parts[i] === '.' || parts[i] === '..') {
+        return null;
+      }
+    }
+    return /\.rkt$/i.test(p) ? p : null;
+  }
+
+  /* 本地 file:// 预览时的兜底来源（GitHub 仓库的 main 分支）。 */
+  var RAW_BASE = 'https://raw.githubusercontent.com/lu96-wow/study-opengl-with-racket/main/';
+
+  function main() {
+    var p = safePath(new URLSearchParams(location.search).get('f') || '');
+    if (!p) {
+      showError('缺少或无法识别的文件路径。正确用法：code.html?f=01-window/window.rkt');
+      return;
+    }
+
+    document.title = p + ' — study-opengl';
+    fname.textContent = p;
+    crumb.textContent = p;
+    raw.href = p;
+    raw.setAttribute('download', '');
+
+    back.addEventListener('click', function (e) {
+      if (history.length > 1) {
+        e.preventDefault();
+        history.back();
+      }
+    });
+
+    var url = p.split('/').map(encodeURIComponent).join('/');
+
+    function load(u) {
+      return fetch(u, { cache: 'no-store' }).then(function (res) {
+        if (!res.ok) {
+          throw new Error('HTTP ' + res.status);
+        }
+        return res.text();
+      });
+    }
+
+    function render(src, fromGitHub) {
+      code.innerHTML = window.highlightRacket ? window.highlightRacket(src) : escapeHtml(src);
+      code.setAttribute('data-hl', '1');
+      codetitle.textContent = p;
+      status.textContent = src.split('\n').length + ' 行 · 本机运行：racket ' + p +
+        (fromGitHub ? ' · 预览文件读取受限，已回退到 GitHub 上的同一文件' : '');
+      box.hidden = false;
+    }
+
+    load(url)
+      .then(function (src) { render(src, false); })
+      .catch(function () {
+        /* 本地用 file:// 打开时浏览器会拦截 fetch，回退到 GitHub raw。 */
+        return load(RAW_BASE + url)
+          .then(function (src) { render(src, true); })
+          .catch(function (err) {
+            showError('读取 ' + p + ' 失败（' + err.message + '）。若在本机预览，请在本目录执行 ' +
+                      'python3 -m http.server 8000，再访问 http://localhost:8000/code.html?f=' + p);
+          });
+      });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', main);
+  } else {
+    main();
+  }
+})();
+</script>
+</body>
+</html>

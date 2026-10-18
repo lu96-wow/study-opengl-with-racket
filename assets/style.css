@@ -1,0 +1,522 @@
+/* study-opengl · 全站样式
+   深浅色跟随系统。变量必须留在 :root 上：内联 SVG 直接用
+   fill="var(--fg)" / stroke="var(--line)" 这类写法引用它们。 */
+
+:root {
+  color-scheme: light dark;
+
+  --bg: #ffffff;
+  --fg: #1c1f24;
+  --muted: #6b7280;
+  --line: #d9dde4;
+  --accent: #2f6feb;
+  --accent-soft: #eef4ff;
+  --code-bg: #1b1e26;
+  --code-fg: #d7dae0;
+  --warn-bg: #fff4e0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c;
+    --fg: #e6e9ee;
+    --muted: #9aa3b2;
+    --line: #2c323c;
+    --accent: #6ea8fe;
+    --accent-soft: #1b2433;
+    --code-bg: #0f1116;
+    --code-fg: #d7dae0;
+    --warn-bg: #2a2118;
+  }
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+  font-size: 16px;
+  line-height: 1.75;
+  overflow-wrap: break-word;
+}
+
+pre,
+code,
+.run,
+.code-title,
+.card-run,
+a.filelink {
+  font-family: ui-monospace, "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 600;
+  line-height: 1.35;
+  scroll-margin-top: 1.5rem;
+}
+
+h1 {
+  font-size: 1.9rem;
+  margin: 0 0 1rem;
+}
+
+h2 {
+  font-size: 1.28rem;
+  margin: 2.5rem 0 1rem;
+  padding-left: 0.7rem;
+  border-left: 4px solid var(--accent);
+}
+
+h3 {
+  font-size: 1.06rem;
+  margin: 1.7rem 0 0.6rem;
+}
+
+p {
+  margin: 0 0 1rem;
+}
+
+ul,
+ol {
+  margin: 0 0 1rem;
+  padding-left: 1.5rem;
+}
+
+li {
+  margin: 0.25rem 0;
+}
+
+a {
+  color: var(--accent);
+  text-underline-offset: 0.18em;
+}
+
+:not(pre) > code {
+  background: rgba(128, 128, 128, 0.16);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  font-size: 0.92em;
+}
+
+/* ---- 表格 ---------------------------------------------------- */
+
+table.spec {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0 0 1.25rem;
+  font-size: 0.92rem;
+}
+
+table.spec th,
+table.spec td {
+  border: 1px solid var(--line);
+  padding: 0.45rem 0.7rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+table.spec thead th {
+  background: rgba(128, 128, 128, 0.12);
+  font-weight: 600;
+}
+
+table.spec tbody tr:nth-child(even) {
+  background: rgba(128, 128, 128, 0.055);
+}
+
+/* ---- 代码块 -------------------------------------------------- */
+
+pre {
+  margin: 0 0 1.25rem;
+  padding: 0.9rem 1rem;
+  border-radius: 8px;
+  background: var(--code-bg);
+  color: var(--code-fg);
+  font-size: 14px;
+  line-height: 1.7;
+  overflow-x: auto;
+}
+
+pre code {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.code {
+  margin: 0 0 1.25rem;
+  border-radius: 8px;
+  background: var(--code-bg);
+  overflow: hidden;
+}
+
+.code pre {
+  margin: 0;
+  border-radius: 0;
+  background: var(--code-bg);
+  font-size: 14px;
+  line-height: 1.7;
+  overflow-x: auto;
+}
+
+.code-title {
+  padding: 0.4rem 0.9rem;
+  background: #262b36;
+  color: #aab4c3;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+/* 代码块标题右侧的「源码 ↗」：链到 code.html 的在线源码页 */
+.code-title .srclink {
+  float: right;
+  margin-left: 0.75rem;
+  color: #aab4c3;
+  text-decoration: underline dashed;
+  text-underline-offset: 0.2em;
+  white-space: nowrap;
+}
+
+.code-title .srclink:hover {
+  color: #e6e9ee;
+}
+
+/* code.html 里的顶栏链接 */
+#back {
+  cursor: pointer;
+}
+
+/* 代码块的底色两种配色下都是深色，所以这 5 类 token 只调一次。 */
+.tok-c {
+  color: #7f8a99;
+  font-style: italic;
+}
+
+.tok-s {
+  color: #98c379;
+}
+
+.tok-n {
+  color: #d19a66;
+}
+
+.tok-k {
+  color: #c678dd;
+}
+
+.tok-p {
+  color: #56b6c2;
+}
+
+/* ---- 提示块 -------------------------------------------------- */
+
+.goal {
+  margin: 0 0 1.5rem;
+  padding: 0.8rem 1.1rem;
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent-soft);
+}
+
+.note {
+  margin: 0 0 1.25rem;
+  padding: 0.7rem 1rem;
+  border-left: 3px solid var(--muted);
+  border-radius: 6px;
+  background: rgba(128, 128, 128, 0.08);
+}
+
+.note.key {
+  border-left-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.note.warn {
+  border-left-color: #d9822b;
+  background: var(--warn-bg);
+}
+
+.note b {
+  margin-right: 0.5em;
+}
+
+.goal > :last-child,
+.note > :last-child {
+  margin-bottom: 0;
+}
+
+.run {
+  margin: 0 0 1.25rem;
+  padding: 0.6rem 0.9rem;
+  border-radius: 8px;
+  background: var(--code-bg);
+  color: var(--code-fg);
+  font-size: 14px;
+  overflow-x: auto;
+}
+
+.run .prompt {
+  /* 代码底在两种配色下都是深色，--accent 的浅色值在深底上对比度不足，
+     这里固定一个对 #1b1e26 / #0f1116 都 >= 4.5:1 的浅蓝 */
+  color: #8ab4f8;
+}
+
+.figure {
+  margin: 1.5rem 0;
+  text-align: center;
+}
+
+.figure svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
+.figure img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.figcaption {
+  margin-top: 0.5rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.exercise {
+  margin: 0 0 1.4rem;
+}
+
+ol.exercise,
+ul.exercise,
+.exercise ol,
+.exercise ul {
+  padding-left: 1.6rem;
+}
+
+.exercise ol,
+.exercise ul {
+  margin: 0;
+}
+
+.exercise li {
+  margin: 0.45rem 0;
+}
+
+.exercise li::marker {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+a.filelink {
+  text-decoration: underline dashed;
+  text-underline-offset: 0.2em;
+}
+
+/* ---- 布局 ---------------------------------------------------- */
+
+.page {
+  max-width: 82rem;
+  margin: 0 auto;
+  padding: 0 1.25rem;
+}
+
+.site-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 1rem;
+  margin-bottom: 2rem;
+  padding: 0.9rem 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.9rem;
+}
+
+.site-title {
+  color: var(--fg);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.site-title:hover {
+  color: var(--accent);
+}
+
+.crumbs {
+  color: var(--muted);
+}
+
+.crumbs a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.crumbs a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.layout {
+  display: block;
+}
+
+.content {
+  max-width: 48rem;
+  min-width: 0;
+  margin: 0 auto;
+}
+
+.toc {
+  display: none;
+}
+
+.toc b {
+  display: block;
+  margin-bottom: 0.5rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+}
+
+.toc ol {
+  margin: 0;
+  padding-left: 1.7rem;
+  font-size: 0.88rem;
+  line-height: 1.6;
+}
+
+.toc li {
+  margin: 0.3rem 0;
+}
+
+.toc a {
+  display: inline-block;
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.toc a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin: 2.5rem 0 0;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.92rem;
+}
+
+.pager .prev {
+  margin-right: auto;
+}
+
+.pager .next {
+  margin-left: auto;
+  text-align: right;
+}
+
+.site-footer {
+  margin-top: 3rem;
+  padding: 1rem 0 2rem;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* ---- 首页卡片 ------------------------------------------------ */
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 1rem;
+  margin: 0 0 1.5rem;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.card-num {
+  color: var(--accent);
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.card-title {
+  margin: 0;
+  font-size: 1.02rem;
+  font-weight: 600;
+}
+
+.card-title a {
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.card-title a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.card-desc {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.89rem;
+}
+
+.card-run {
+  align-self: flex-start;
+  max-width: 100%;
+  margin-top: auto;
+  padding: 0.2rem 0.5rem;
+  border-radius: 5px;
+  background: rgba(128, 128, 128, 0.12);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 1100px) {
+  .layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 15rem;
+    gap: 2.5rem;
+    align-items: start;
+  }
+
+  .toc {
+    display: block;
+    position: sticky;
+    top: 1.5rem;
+    max-height: calc(100vh - 3rem);
+    overflow-y: auto;
+  }
+}

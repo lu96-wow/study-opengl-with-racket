@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>09 · 基础光照 — study-opengl</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/highlight.js" defer></script>
+</head>
+<body>
+<div class="page">
+
+  <header class="site-header">
+    <a class="site-title" href="../index.html">study-opengl</a>
+    <nav class="crumbs"><a href="../index.html">课程</a> / <span>09 · 基础光照</span></nav>
+  </header>
+
+  <div class="layout">
+    <main class="content">
+
+      <h1>基础光照</h1>
+
+      <p class="goal">本节目标：在 08 课「物体色 × 光色」那条乘法上补进「方向」——逐片元算 ambient（环境光）、diffuse（漫反射）、specular（镜面高光）三项。为此第一次给顶点加一条法线属性，第一次用「法线矩阵」把法线正确地搬进世界空间，也第一次用 <code>glsl-struct</code> 描述顶点布局。跑起来应该看到一个橙色立方体：正面被照亮、中央有一块圆形高光，左侧和底面只剩一点环境光、明显比背景还暗——三项光照同时在场。</p>
+
+      <div class="run"><span class="prompt">$</span> racket 09-basic-lighting/basic-lighting.rkt</div>
+
+            <div class="note key">
+        <p><b>计算位置</b>本课的 Phong 公式在<b>片元着色器</b>里逐像素算。9.1.5 先用 CPU 对三个采样点算一遍，看到数字后再看 9.3 的 shader；CPU 也可以逐顶点算（Gouraud）或离线烘焙成 lightmap，三种位置的取舍见 R3。</p>
+      </div>
+
+<h2 id="s9-1">9.1 三项各管什么</h2>
+
+      <p>08 课的一条乘法回答了「颜色从哪来」，但它对方向一无所知：同一份光照参数下，立方体六个面一样亮——因为 <code>u-object-color * u-light-color</code> 里没有任何一项和「面朝哪、光在哪」有关。现实里同一盏灯下，正对灯的面亮、背对灯的面暗、打磨光滑的表面还有一块高光。这三件事各由一项负责，合起来就是常说的「Phong 光照」：</p>
+
+      <ul>
+        <li><b>ambient（环境光）</b>——保底亮度。现实里光会在墙面、地面之间来回弹，多少总能漏一点到背光面；不去模拟这种反弹，直接给一个常数 <code>0.1</code>。少了它，背光面是纯黑，看着不像真实世界。</li>
+        <li><b>diffuse（漫反射）</b>——面朝着光的那一部分。亮度正比于「法线 <code>n</code>」与「指向光源的方向 <code>l</code>」夹角余弦，也就是 <code>max(dot(n, l), 0.0)</code>：正对光时是 1，斜着变暗，背向光时为负——<code>max</code> 把负数截成 0，背光面就一点都不漫反射。</li>
+        <li><b>specular（镜面高光）</b>——反射光正对着眼睛时的亮点。把 <code>l</code> 关于法线做镜像得到反射方向 <code>r</code>（代码里写 <code>reflect(-light-dir, norm)</code>），再看「指向眼睛的方向 <code>v</code>」和 <code>r</code> 有多贴合：<code>pow(max(dot(v, r), 0.0), 32.0)</code>。指数 32 决定高光的松紧——越大越像镜面上的一点，越小越像磨砂面的一大片。</li>
+      </ul>
+
+      <figure class="figure">
+        <svg viewBox="0 0 720 300" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>表面上一点引出的四个方向：法线 n、指向光源的 l、l 关于 n 的镜像 r、指向眼睛的 v；diffuse 用 n 与 l 的点乘，specular 用 r 与 v 的点乘，ambient 是常数</title>
+          <defs>
+            <marker id="lit-arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+            </marker>
+            <marker id="lit-arrow-warn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#d9822b"/>
+            </marker>
+            <marker id="lit-arrow-muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--muted)"/>
+            </marker>
+          </defs>
+
+          <rect x="60" y="200" width="470" height="24" fill="var(--accent-soft)" stroke="none"/>
+          <line x1="60" y1="200" x2="530" y2="200" stroke="var(--line)" stroke-width="2"/>
+          <text x="60" y="243" font-size="13" fill="var(--muted)">表面（这里画成一条边看）</text>
+
+          <circle cx="260" cy="200" r="4.5" fill="var(--fg)"/>
+          <text x="252" y="222" text-anchor="end" font-size="13" fill="var(--fg)">这一点</text>
+
+          <line x1="260" y1="200" x2="260" y2="86" stroke="var(--accent)" stroke-width="2" marker-end="url(#lit-arrow-accent)"/>
+          <text x="252" y="80" text-anchor="end" font-size="14" fill="var(--accent)">n 法线</text>
+
+          <line x1="260" y1="200" x2="392" y2="110" stroke="#d9822b" stroke-width="2" marker-end="url(#lit-arrow-warn)"/>
+          <text x="400" y="106" font-size="14" fill="#d9822b">l 指向光源</text>
+
+          <line x1="260" y1="200" x2="128" y2="110" stroke="#d9822b" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#lit-arrow-warn)"/>
+          <text x="120" y="106" text-anchor="end" font-size="14" fill="#d9822b">r 反射方向</text>
+
+          <line x1="260" y1="200" x2="470" y2="176" stroke="var(--muted)" stroke-width="2" marker-end="url(#lit-arrow-muted)"/>
+          <text x="478" y="180" font-size="14" fill="var(--muted)">v 指向眼睛</text>
+
+          <circle cx="452" cy="88" r="13" fill="none" stroke="#d9822b" stroke-width="2"/>
+          <line x1="452" y1="75" x2="452" y2="61" stroke="#d9822b" stroke-width="2"/>
+          <line x1="439" y1="88" x2="425" y2="88" stroke="#d9822b" stroke-width="2"/>
+          <line x1="465" y1="88" x2="479" y2="88" stroke="#d9822b" stroke-width="2"/>
+          <line x1="452" y1="101" x2="452" y2="115" stroke="#d9822b" stroke-width="2"/>
+          <text x="452" y="140" text-anchor="middle" font-size="13" fill="#d9822b">光源</text>
+
+          <ellipse cx="530" cy="176" rx="16" ry="9" fill="none" stroke="var(--muted)" stroke-width="2"/>
+          <circle cx="530" cy="176" r="4" fill="var(--muted)"/>
+          <text x="556" y="181" font-size="13" fill="var(--muted)">眼睛</text>
+
+          <text x="60" y="266" font-size="13" fill="var(--fg)">diffuse 用 n 与 l 的点乘；ambient 是常数 0.1，不依赖任何方向。</text>
+          <text x="60" y="288" font-size="13" fill="var(--fg)">specular 用 r 与 v 的点乘——两者越贴合越亮，只有反射光正好射进眼睛才看得到。</text>
+        </svg>
+        <figcaption class="figcaption">图 9-1 表面一点上的四个方向，各自进哪一项</figcaption>
+      </figure>
+
+      <p><code>r</code> 是 <code>l</code> 关于法线的镜像（图中画成虚线，表示它是算出来的、不是真实存在的光线）。注意作图时 <code>r</code> 和 <code>v</code> 通常并不重合——那样的像素就没有高光；本课立方体正面中央恰好让两者对上了，于是那里浮出一块亮斑。</p>
+
+      <p>三项是同一份光的三种去处，所以最后相加、再乘上 08 课的光色和物色：<code>(ambient + diff + spec) * u-light-color * u-object-color</code>。08 课那条乘法没有被丢掉，只是现在「光有多少」不再是常数，而是逐像素算出来的。</p>
+
+      <p>场景里还画了一个白色小方块当「灯」：位置就是 <code>u-light-pos</code>、scale 0.2，片元只输出光色不做乘法——和 08 课一样另起一个 program，因为灯是光本身，不是被光照到的东西。注意本课这个机位下（相机在 <code>(0,0,3)</code>、光在 <code>(1.2,1.0,2.0)</code>）灯落在画面右上方之外，看不见；这不影响光照——<code>u-light-pos</code> 只是个给片元算方向用的坐标，光不必出现在画面里才能照亮物体。</p>
+
+      <h3 id="s9-1-1">9.1.1 点积到底算出了什么</h3>
+
+      <p>光照公式里到处是 <code>dot</code>，它不是魔法，就是两个向量的点积：</p>
+
+      <p><code>dot(a, b) = |a| · |b| · cos(θ)</code></p>
+
+      <p>如果 <code>a</code>、<code>b</code> 都已经归一化（长度 1），那么 <code>|a| = |b| = 1</code>，点积就直接等于夹角的余弦：</p>
+
+      <p><code>dot(normalize(a), normalize(b)) = cos(θ)</code></p>
+
+      <p>所以光照里先做 <code>normalize</code> 再 <code>dot</code>，是为了让结果落在 <code>-1 .. 1</code> 之间，直接当「方向有多贴合」用。本课的四个方向都是单位向量：</p>
+
+      <ul>
+        <li><code>n = normalize(v-normal)</code>：表面法线，垂直表面向外；</li>
+        <li><code>l = normalize(u-light-pos - v-frag-pos)</code>：从<b>片元指向光源</b>；</li>
+        <li><code>v = normalize(u-view-pos - v-frag-pos)</code>：从<b>片元指向相机</b>；</li>
+        <li><code>r = reflect(-l, n)</code>：<code>l</code> 关于法线的反射方向。</li>
+      </ul>
+
+      <p>注意 <code>l</code> 的符号：它必须是「从表面指向光源」，不是「光传播的方向」。如果写成 <code>lightPos - fragPos</code>，正对光时 <code>dot(n,l)=1</code>；写成反方向就会在最亮的地方得到负值，整块反而变黑。</p>
+
+      <h3 id="s9-1-2">9.1.2 Lambert 漫反射：为什么是 <code>max(dot(n,l), 0)</code></h3>
+
+      <p>漫反射的物理直觉是：一束光打在表面上，表面越正对光，单位面积接收到的能量越多；斜着擦过时，同样的光摊到更大的面积上，单位面积就暗。这个「正对程度」正好是法线和光线方向的夹角余弦：</p>
+
+      <p><code>lambert = max(dot(n, l), 0)</code></p>
+
+      <p>为什么要有 <code>max(..., 0)</code>：当 <code>n</code> 和 <code>l</code> 夹角超过 90° 时，点积是负数，表示光在表面背面。背面不应该被这盏灯照亮，所以把负数截成 0。没有这个 <code>max</code>，背光面会被加上负光，颜色可能被减成黑色甚至出现奇怪的负值。</p>
+
+      <table class="spec">
+        <thead><tr><th><code>dot(n,l)</code></th><th>夹角</th><th><code>max(...,0)</code></th><th>视觉效果</th></tr></thead>
+        <tbody>
+          <tr><td>1.0</td><td>0°</td><td>1.0</td><td>正对光，最亮</td></tr>
+          <tr><td>0.7</td><td>≈45°</td><td>0.7</td><td>斜着照，变暗</td></tr>
+          <tr><td>0.0</td><td>90°</td><td>0.0</td><td>光擦着表面，漫反射为 0</td></tr>
+          <tr><td>-0.5</td><td>≈120°</td><td>0.0</td><td>背光面，这盏灯不贡献漫反射</td></tr>
+        </tbody>
+      </table>
+
+      <p>所以漫反射项是：</p>
+
+      <p><code>diffuse = max(dot(n, l), 0) · lightColor · objectColor</code></p>
+
+      <h3 id="s9-1-3">9.1.3 Phong 高光：反射方向与眼睛方向</h3>
+
+      <p>高光不是「表面越亮越白」，而是「反射光正好射进眼睛」。所以要看两个方向有多贴合：</p>
+
+      <ul>
+        <li><code>r</code>：入射光 <code>l</code> 打到表面后弹开的方向；</li>
+        <li><code>v</code>：从片元指向眼睛的方向。</li>
+      </ul>
+
+      <p>反射公式是：</p>
+
+      <p><code>r = 2 · dot(n, l) · n - l</code></p>
+
+      <p>GLSL 的 <code>reflect(I, N)</code> 要求的 <code>I</code> 是「入射方向」，也就是从光源指向表面的方向，正好是 <code>-l</code>。所以代码写成：</p>
+
+      <div class="code">
+        <div class="code-title">09-basic-lighting/basic-lighting.rkt：高光的方向<a class="srclink" href="../code.html?f=09-basic-lighting/basic-lighting.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">(vec-3 reflect-dir (reflect (- light-dir) norm))
+        (vec-3 view-dir (normalize (- u-view-pos v-frag-pos)))
+        (float spec (* (pow (max (dot view-dir reflect-dir) 0.0) 32.0) 0.5))</code></pre>
+      </div>
+
+      <p><code>dot(v, r)</code> 越接近 1，说明眼睛越接近反射光的方向，高光越亮。外面再套一个 <code>pow(..., shininess)</code>：</p>
+
+      <p><code>specular = pow(max(dot(v, r), 0), shininess) · specularStrength</code></p>
+
+      <p><code>shininess</code> 控制高光的「紧」：指数越大，只有 <code>v</code> 和 <code>r</code> 非常接近时才明显，高光变成一个小点；指数越小，高光摊成一大片，像磨砂表面。<code>max(...,0)</code> 同样是把背向反射方向的负值截掉。</p>
+
+      <table class="spec">
+        <thead><tr><th><code>dot(v,r)</code></th><th><code>pow(..., 32)</code></th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td>1.0</td><td>1.0</td><td>眼睛正好在反射方向上，高光最强</td></tr>
+          <tr><td>0.95</td><td>≈0.19</td><td>稍微偏一点，高光迅速衰减</td></tr>
+          <tr><td>0.8</td><td>≈0.0008</td><td>已经基本看不到高光</td></tr>
+          <tr><td>≤0</td><td>0</td><td>眼睛在反射方向的背面，没有高光</td></tr>
+        </tbody>
+      </table>
+
+      <h3 id="s9-1-4">9.1.4 三项相加：同一份光的三种去处</h3>
+
+      <p>把三项写在一起：</p>
+
+      <p><code>ambient = 0.1</code></p>
+      <p><code>diffuse = max(dot(n, l), 0)</code></p>
+      <p><code>specular = pow(max(dot(v, r), 0), 32) · 0.5</code></p>
+      <p><code>color = (ambient + diffuse + specular) · lightColor · objectColor</code></p>
+
+      <p>为什么是相加：这三项描述的是同一份光的不同去向——一部分被均匀散射（ambient 的简化替代）、一部分按 Lambert 漫反射、一部分按镜面方向反射。最后再乘 08 课的光色和物体色，08 课那条乘法没有消失，只是「光有多少」从常数变成了逐像素计算。</p>
+
+      <div class="note key">
+        <p><b>这只是 Phong 光照模型</b>：它是经验公式，不是严格物理。ambient 是常数，diffuse/specular 也没有能量守恒。它的价值是：公式短、每一项都能单独观察和调参，适合作为理解光照的第一步。后面更物理的模型（如 Cook-Torrance）会保留同样的「法线、光方向、视线、反射」这些几何量，只是换掉 BRDF。</p>
+      </div>
+
+      <h3 id="s9-1-5">9.1.5 先在 CPU 上算三个点</h3>
+
+      <p>公式齐了，先别急着写 shader。把 09 课的场景参数拿到 CPU 上，用同一个 <code>phong</code> 函数算三个片元，数字会告诉你每一项到底在做什么。</p>
+
+      <p>下面代码里的 <code>vec-3</code> / <code>vnormalize</code> / <code>vsub</code> / <code>vdot</code> 来自 <code>#lang glsl</code>（racket-shader），不是 <code>racket/math</code>；<code>racket/math</code> 只提供 <code>degrees->radians</code>。</p>
+
+      <div class="run"><span class="prompt">$</span> racket 09-basic-lighting/phong-cpu.rkt</div>
+
+      <div class="code">
+        <div class="code-title">09-basic-lighting/phong-cpu.rkt（和 frag-src 逐字相同）<a class="srclink" href="../code.html?f=09-basic-lighting/phong-cpu.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">(define (phong frag-pos normal)
+  (define norm (vnormalize normal))
+  (define light-dir (vnormalize (vsub light-pos frag-pos)))
+  (define view-dir (vnormalize (vsub eye-pos frag-pos)))
+  (define reflect-dir (vreflect (vneg light-dir) norm))
+
+  (define ambient 0.1)
+  (define diff (max (vdot norm light-dir) 0.0))
+  (define spec (* (expt (max (vdot view-dir reflect-dir) 0.0) 32.0) 0.5))
+  (define color (vmul (vmul light-color (+ ambient diff spec)) object-color))
+  (list norm light-dir reflect-dir ambient diff spec color))</code></pre>
+      </div>
+
+      <p>脚本还顺手做了顶点着色器那两步：<code>v-frag-pos = model · vec4(local-pos, 1)</code>、<code>v-normal = normal-matrix · local-normal</code>。算出来的结果：</p>
+
+      <table class="spec">
+        <thead><tr><th>采样点</th><th><code>v-normal</code></th><th><code>diffuse</code></th><th><code>specular</code></th><th><code>color</code></th></tr></thead>
+        <tbody>
+          <tr>
+            <td>正面中央</td>
+            <td>(0.25, 0.21, 0.94)</td>
+            <td>0.918</td>
+            <td>0.499</td>
+            <td>(1.52, 0.76, 0.47)</td>
+          </tr>
+          <tr>
+            <td>正面右上</td>
+            <td>(0.25, 0.21, 0.94)</td>
+            <td>0.997</td>
+            <td>0.002</td>
+            <td>(1.10, 0.55, 0.34)</td>
+          </tr>
+          <tr>
+            <td>左面中央</td>
+            <td>(−0.97, 0, 0.26)</td>
+            <td>0.000</td>
+            <td>0.000</td>
+            <td>(0.10, 0.05, 0.03)</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>三行数字正好对应本课想让你看到的三种情况：</p>
+
+      <ul>
+        <li><b>正面中央</b>：漫反射接近 1，而且 <code>v</code> 和 <code>r</code> 几乎重合，高光 <code>specular</code> 接近最大值 0.5——这就是画面中央那块亮斑。</li>
+        <li><b>正面右上</b>：法线一样、漫反射甚至更高（0.997），但高光掉到 0.002。因为这一点的反射方向 <code>r</code> 不再对着眼睛；<b>高光只看方向，不看「正不正对光」</b>。</li>
+        <li><b>左面中央</b>：<code>dot(n,l) &lt; 0</code>，漫反射被 <code>max(...,0)</code> 截成 0，高光也为 0，只剩 <code>ambient × objectColor</code>。背光面不是黑色，是因为环境光保底。</li>
+      </ul>
+
+      <div class="note">
+        <p><b>同一个公式，两种执行方式</b>CPU 脚本只算 3 个点，片元着色器对屏幕上每一个像素算一次。09 课的画面是 800×600，立方体覆盖的每个像素都跑了一遍上面这段 <code>phong</code>。这就是 R3 和 R4 反复说的「同一公式、不同计算位置」。</p>
+      </div>
+
+      <h2 id="s9-2">9.2 法线为什么要 inverse-transpose</h2>
+
+      <p>diffuse 和 specular 全靠法线，所以本课做两件新事：让顶点带上法线（属性 <code>location 1</code>），再把法线从「面自己的坐标」搬进世界空间——它得跟着 model 一起转。这里有个经典坑：<b>法线不能拿 model 矩阵直接转</b>。</p>
+
+      <p>顶点位置是「点」，随模型的缩放、旋转、平移怎么变都行；法线是「方向」，它垂直于表面，变换之后必须仍然垂直。model 只含旋转和平移时直接乘没问题；一旦含<b>非等比缩放</b>，两者就分道扬镳：把球在 x 方向拉长 1.5 倍压成椭球，垂直于原来表面的法线若也被拉长 1.5 倍，就不再垂直于拉长后的表面了——光照会照着「想象中的球」算，可表面早就不是那个球。正确做法是「左上 3×3 的逆转置」<code>transpose(inverse(mat-3(model)))</code>：逆先抵消缩放的歪曲，再转置回法线该在的方向。lib/matrix.rkt 里就是这个：</p>
+
+      <figure class="figure">
+        <svg viewBox="0 0 720 250" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>同一个点上的法线：左边直接用 mat-3(model) 转，法线被缩放带歪、不再垂直于表面；右边用逆转置，法线仍垂直于表面</title>
+          <defs>
+            <marker id="norm-arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+            </marker>
+            <marker id="norm-arrow-warn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#d9822b"/>
+            </marker>
+          </defs>
+
+          <text x="190" y="28" text-anchor="middle" font-size="13" fill="#d9822b">naive：直接用 mat-3(model) 转</text>
+          <text x="190" y="47" text-anchor="middle" font-size="12" fill="var(--muted)">法线被带歪，不再垂直于表面</text>
+
+          <circle cx="180" cy="150" r="50" fill="none" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="5 4"/>
+          <ellipse cx="180" cy="150" rx="100" ry="50" fill="var(--accent-soft)" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="180" y="212" text-anchor="middle" font-size="12" fill="var(--muted)">虚线圈是原来的球，缩小 2 倍画出来</text>
+
+          <line x1="211" y1="134" x2="289" y2="95" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="4 3"/>
+          <line x1="251" y1="125" x2="309" y2="96" stroke="#d9822b" stroke-width="2" marker-end="url(#norm-arrow-warn)"/>
+          <line x1="251" y1="125" x2="280" y2="67" stroke="var(--accent)" stroke-width="2" marker-end="url(#norm-arrow-accent)"/>
+          <circle cx="251" cy="125" r="4" fill="var(--fg)"/>
+          <text x="316" y="92" font-size="13" fill="#d9822b">naive 的法线</text>
+          <text x="286" y="60" font-size="13" fill="var(--accent)">正确的法线</text>
+
+          <text x="550" y="28" text-anchor="middle" font-size="13" fill="var(--accent)">inverse-transpose：矩阵的逆转置</text>
+          <text x="550" y="47" text-anchor="middle" font-size="12" fill="var(--muted)">法线仍垂直于表面</text>
+
+          <ellipse cx="540" cy="150" rx="100" ry="50" fill="var(--accent-soft)" stroke="var(--line)" stroke-width="1.5"/>
+          <line x1="571" y1="134" x2="649" y2="95" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="4 3"/>
+          <line x1="611" y1="125" x2="640" y2="67" stroke="var(--accent)" stroke-width="2" marker-end="url(#norm-arrow-accent)"/>
+          <circle cx="611" cy="125" r="4" fill="var(--fg)"/>
+          <polyline points="615.2,115.7 624.1,120.2 619.6,129.1" fill="none" stroke="var(--line)" stroke-width="1.2"/>
+          <text x="646" y="60" font-size="13" fill="var(--accent)">垂直于切线</text>
+          <text x="550" y="212" text-anchor="middle" font-size="12" fill="var(--muted)">椭圆长轴方向被拉了 2 倍：45° 处的法线</text>
+          <text x="550" y="232" text-anchor="middle" font-size="12" fill="var(--muted)">两种算法差了约 37°</text>
+        </svg>
+        <figcaption class="figcaption">图 9-2 非等比缩放下，naive 的法线歪了，逆转置的法线还垂直于表面</figcaption>
+      </figure>
+
+      <div class="code">
+        <div class="code-title">lib/matrix.rkt：m-normal-matrix<a class="srclink" href="../code.html?f=lib/matrix.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">;; 法线矩阵：法线要跟着模型转，但不能直接拿 mat-3(model) 去转——模型含非等比缩放时，
+;; 顶点被压扁、法线却还指着原方向，光照就错（球会被照成椭球的样子）。
+;; 正确的变换是「左上 3x3 的逆转置」：逆抵消缩放的歪曲，再转置回法线该在的方向；
+;; 纯旋转 + 等比缩放时逆与转置互相抵消，退化成 mat-3(model)。法线是方向（w=0），平移影响不到它。
+(define (m-normal-matrix m)
+  (define (e col row) (mat4-ref m col row))
+  (mat3-transpose
+   (mat3-inverse
+    (mat-3 (e 0 0) (e 0 1) (e 0 2)
+          (e 1 0) (e 1 1) (e 1 2)
+          (e 2 0) (e 2 1) (e 2 2)))))</code></pre>
+      </div>
+
+      <p>算出来是个 <code>mat-3</code>，用生成的 <code>(set-obj-u-normal-matrix! (m-normal-matrix model))</code> 上传；它内部选 <code>gl-uniform-matrix-3fv</code>，并把转置参数固定成 <code>#f</code>——和 4×4 矩阵同一个理由：本教程的矩阵一律列主序，正好是 GL 期望的排布，再让 GL 转一次反而会转错。顶点着色器里就是一行乘法：</p>
+
+      <div class="code">
+        <div class="code-title">09-basic-lighting/basic-lighting.rkt：上传法线矩阵（draw 里）<a class="srclink" href="../code.html?f=09-basic-lighting/basic-lighting.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">  ;; 法线矩阵是 mat-3，setter 内部自动选 matrix-3fv 且 transpose 固定 #f：
+  ;; lib/matrix.rkt 的矩阵都是列主序，正好是 GL 要的，传 #t 会让它转错。
+  (set-obj-u-normal-matrix! (m-normal-matrix model))</code></pre>
+      </div>
+
+      <div class="code">
+        <div class="code-title">09-basic-lighting/basic-lighting.rkt：顶点着色器里法线跟着 model 转<a class="srclink" href="../code.html?f=09-basic-lighting/basic-lighting.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">        (uniform mat-3 u-normal-matrix)            ; 法线专用的 mat-3，为什么不是 u-model 见 9.2
+        (out vec-3 v-normal)
+        (out vec-3 v-frag-pos)
+        (define (main) void
+          (set! v-normal (* u-normal-matrix normal))
+          (set! v-frag-pos (vec-3 (* u-model (vec-4 pos 1.0))))
+          (set! gl-position (* u-proj (* u-view (* u-model (vec-4 pos 1.0))))))))</code></pre>
+      </div>
+
+      <div class="note key">
+        <p><b>关键点</b>model 只含<b>旋转 + 等比缩放</b>时，「逆转置」退化成 <code>mat-3(model)</code>：旋转的逆就是它的转置，等比缩放只是个正数因子、不改方向。所以本课默认画面看不出两者的差别——差别发生在你给 model 加上非等比缩放的那一刻：<code>(m-scale (vec-3 1.5 1.0 1.0))</code> 时，正面那块高光从 0.41 掉到 0.15；把 1.5 换成 4.0，高光干脆消失（0.47 → 0.00）。试试看第 ④ 条就是干这个的。</p>
+      </div>
+
+      <h2 id="s9-3">9.3 在片元里算 + 布局用 glsl-struct</h2>
+
+      <p>三项都在<b>片元</b>着色器里算，不在顶点着色器里算。原因是法线从顶点传到片元时会被插值：立方体每个面的 4 个顶点法线相同，插值完整个面还是同一个法线，于是得到一个平整的面；换成曲面（球、地形）时相邻顶点的法线不同，插值后每个像素拿到一条略微不同的法线，高光才会顺着表面平滑铺开。要是改在顶点里算好颜色再插值，高光会被「摊」在三角形顶点之间，看到的是面与面之间的硬边，而不是一整片高光。所以顶点着色器本课只管两件事：把位置算进 <code>gl-position</code>、把法线和世界坐标传给片元。</p>
+
+      <p>片元里就是 9.1 那三个公式，一个不多。它和 9.1.5 的 CPU 脚本 <code>phong</code> 逐行对应，区别只在这里对每个像素跑一次：</p>
+
+      <div class="note key"><p><b>命名</b>racket-shader 会把 shader 表面名字里的连字符换成 GLSL 的 <code>_</code>：<code>light-dir</code> 生成 <code>light_dir</code>，<code>v-normal</code> 生成 <code>v_normal</code>，<code>u-light-pos</code> 生成 <code>u_light_pos</code>。所以 shader 和 Racket 侧都可以统一用 kebab-case。</p></div>
+
+      <div class="code">
+        <div class="code-title">09-basic-lighting/basic-lighting.rkt：片元里逐像素算三项<a class="srclink" href="../code.html?f=09-basic-lighting/basic-lighting.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">        (define (main) void
+          (vec-3 norm (normalize v-normal))
+          (vec-3 light-dir (normalize (- u-light-pos v-frag-pos)))
+          (float ambient 0.1)
+          (float diff (max (dot norm light-dir) 0.0))
+          (vec-3 reflect-dir (reflect (- light-dir) norm))
+          (vec-3 view-dir (normalize (- u-view-pos v-frag-pos)))
+          (float spec (* (pow (max (dot view-dir reflect-dir) 0.0) 32.0) 0.5))
+          (set! frag-color (vec-4 (* (+ ambient diff spec) u-light-color u-object-color) 1.0)))))</code></pre>
+      </div>
+
+      <p>再看顶点怎么摆。一个顶点现在要带 6 个数：位置 3 个 + 法线 3 个。03/04 课已经消掉了字节字面量（<code>shader-stride-bytes</code> / <code>shader-byte-size</code> 按类型名算步长与偏移）；本课再往前一步，让 CPU 侧直接<b>镜像 shader 的顶点结构</b>——<code>glsl-struct</code> 声明一张字段表，步长和每个字段的偏移就都跟着字段名走：</p>
+
+      <div class="code">
+        <div class="code-title">09-basic-lighting/basic-lighting.rkt：把顶点结构镜像到 CPU 侧<a class="srclink" href="../code.html?f=09-basic-lighting/basic-lighting.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">(glsl-struct vertex (vec-3 pos) (vec-3 normal))</code></pre>
+      </div>
+
+      <p>于是 24 个顶点就是 24 个 <code>vertex</code> 记录：每个记录既是一对「位置 + 法线」的值，也能铺平成一条连续的 float 缓冲喂给 VBO。绑定属性时不再数字节，直接问字段名：</p>
+
+      <div class="code">
+        <div class="code-title">09-basic-lighting/basic-lighting.rkt：铺平缓冲 + 用字段名绑定属性<a class="srclink" href="../code.html?f=09-basic-lighting/basic-lighting.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">(define cube-data (apply concat-vecs (map vertex-&gt;f32vector cube-verts)))</code></pre>
+      </div>
+
+      <div class="code">
+        <div class="code-title">09-basic-lighting/basic-lighting.rkt：布局按名字自动对齐<a class="srclink" href="../code.html?f=09-basic-lighting/basic-lighting.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">  (glsl-vertex-layout! vert-src vertex)</code></pre>
+      </div>
+
+      <p>图 9-3 是这条缓冲在内存里的样子：每 6 个 float（24 字节）是一个顶点，前 3 个是位置、后 3 个是法线。GPU 每 24 字节取下一个顶点；读法线时从每个顶点的第 12 字节开始，读 3 个 float。这两个数现在一个都不用自己写——它们由字段表算出来。</p>
+
+      <figure class="figure">
+        <svg viewBox="0 0 720 230" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>顶点缓冲的内存布局：每个顶点 6 个 float（位置 3 个 + 法线 3 个）共 24 字节，法线字段从第 12 字节开始</title>
+          <defs>
+            <marker id="strip-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+            </marker>
+          </defs>
+
+          <text x="60" y="24" font-size="13" fill="var(--accent)">布局由 glsl-vertex-layout! 按名字自动对齐</text>
+
+          <text x="120" y="60" font-size="12" fill="var(--muted)">0</text>
+          <text x="186" y="60" font-size="12" fill="var(--muted)">4</text>
+          <text x="252" y="60" font-size="12" fill="var(--muted)">8</text>
+          <text x="318" y="60" font-size="12" fill="var(--muted)">12</text>
+          <text x="384" y="60" font-size="12" fill="var(--muted)">16</text>
+          <text x="450" y="60" font-size="12" fill="var(--muted)">20</text>
+
+          <path d="M 120 70 V 80 H 310 V 70" fill="none" stroke="var(--line)" stroke-width="1.2"/>
+          <text x="215" y="94" text-anchor="middle" font-size="12" fill="var(--fg)">pos：3 个 float</text>
+          <path d="M 336 70 V 80 H 526 V 70" fill="none" stroke="var(--line)" stroke-width="1.2"/>
+          <text x="431" y="94" text-anchor="middle" font-size="12" fill="var(--fg)">normal：3 个 float</text>
+
+          <rect x="120" y="102" width="60" height="44" fill="var(--accent-soft)" stroke="var(--line)" stroke-width="1.2"/>
+          <rect x="186" y="102" width="60" height="44" fill="var(--accent-soft)" stroke="var(--line)" stroke-width="1.2"/>
+          <rect x="252" y="102" width="60" height="44" fill="var(--accent-soft)" stroke="var(--line)" stroke-width="1.2"/>
+          <rect x="336" y="102" width="60" height="44" fill="none" stroke="var(--line)" stroke-width="1.2"/>
+          <rect x="402" y="102" width="60" height="44" fill="none" stroke="var(--line)" stroke-width="1.2"/>
+          <rect x="468" y="102" width="60" height="44" fill="none" stroke="var(--line)" stroke-width="1.2"/>
+          <text x="150" y="130" text-anchor="middle" font-size="13" fill="var(--fg)">pos.x</text>
+          <text x="216" y="130" text-anchor="middle" font-size="13" fill="var(--fg)">pos.y</text>
+          <text x="282" y="130" text-anchor="middle" font-size="13" fill="var(--fg)">pos.z</text>
+          <text x="366" y="130" text-anchor="middle" font-size="13" fill="var(--fg)">n.x</text>
+          <text x="432" y="130" text-anchor="middle" font-size="13" fill="var(--fg)">n.y</text>
+          <text x="498" y="130" text-anchor="middle" font-size="13" fill="var(--fg)">n.z</text>
+
+          <path d="M 120 158 V 170 H 528 V 158" fill="none" stroke="var(--line)" stroke-width="1.2"/>
+          <text x="324" y="188" text-anchor="middle" font-size="13" fill="var(--fg)">一个顶点 = 6 个 float = 24 字节（stride）</text>
+
+          <line x1="330" y1="88" x2="330" y2="206" stroke="#d9822b" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#strip-arrow)"/>
+          <text x="336" y="222" font-size="12" fill="#d9822b">normal 从每个顶点起点算起偏 12 字节（offset）</text>
+
+          <rect x="544" y="102" width="60" height="44" fill="none" stroke="var(--line)" stroke-width="1.2" stroke-dasharray="4 3"/>
+          <text x="574" y="130" text-anchor="middle" font-size="12" fill="var(--muted)">下一个</text>
+          <text x="574" y="166" text-anchor="middle" font-size="12" fill="var(--muted)">… 24 个顶点</text>
+        </svg>
+        <figcaption class="figcaption">图 9-3 一个顶点 24 字节：位置在前 12 字节，法线在后 12 字节</figcaption>
+      </figure>
+
+      <h2 id="s9-4">9.4 三个便捷原语与它们的裸写法</h2>
+
+      <p>本课开始用到三个「编译期便捷原语」。它们不改变 OpenGL 的设计，只是把下面这些手写样板自动化；<b>第一次出现时先看清它们的裸等价</b>。</p>
+
+      <p>先看「不用宏」时，CPU 侧要手写多少东西（假设只有一个立方体、一个 program）：</p>
+
+      <div class="code">
+        <div class="code-title">裸写法：属性布局 + uniform 位置 + 上传</div>
+        <pre><code class="lang-racket">;; 每个属性都要手写 slot / 分量数 / 类型 / stride / offset
+(gl-vertex-attrib-pointer 0 3 gl-float #f (vertex-stride) (vertex-field-offset 'pos))
+(gl-enable-vertex-attrib-array 0)
+(gl-vertex-attrib-pointer 1 3 gl-float #f (vertex-stride) (vertex-field-offset 'normal))
+(gl-enable-vertex-attrib-array 1)
+
+;; 每个 uniform 都要手查位置、手写类型
+(define obj-u-model (uniform-location object-program "u_model"))
+(define obj-u-view (uniform-location object-program "u_view"))
+(define obj-u-proj (uniform-location object-program "u_proj"))
+(define obj-u-normal-matrix (uniform-location object-program "u_normal_matrix"))
+(define obj-u-light-pos (uniform-location object-program "u_light_pos"))
+(define obj-u-light-color (uniform-location object-program "u_light_color"))
+(define obj-u-view-pos (uniform-location object-program "u_view_pos"))
+(define obj-u-object-color (uniform-location object-program "u_object_color"))
+
+;; draw 里逐个上传
+(uniform-set! obj-u-model 'mat-4 model)
+(uniform-set! obj-u-normal-matrix 'mat-3 (m-normal-matrix model))
+(uniform-set! obj-u-light-pos 'vec-3 light-pos)
+;; ...</code></pre>
+      </div>
+
+      <p>本课的宏写法把它压成两行，但生成的东西就是上面这些：</p>
+
+      <div class="code">
+        <div class="code-title">宏写法：编译期按接口表生成</div>
+        <pre><code class="lang-racket">(glsl-vertex-layout! vert-src vertex)
+(glsl-uniform-setter! object-program vert-src frag-src #:prefix "obj-")</code></pre>
+      </div>
+
+      <p>三个便捷原语的裸等价分别是：</p>
+
+      <ul>
+        <li><code>(glsl-shader name form …)</code>：和 <code>(glsl …)</code> 一样产出 shader，额外把编译期接口表绑成 <code>name-interface</code>。<br>
+            裸等价：<code>(define name (glsl …))</code>——但接口只能在运行期用 <code>(glsl-program-interface name)</code> 取，宏用不了。</li>
+        <li><code>(glsl-vertex-layout! vert-src vertex)</code>：按名字（字段名 = shader <code>in</code> 名）生成属性布局。<br>
+            裸写法：<code>(gl-vertex-attrib-pointer 0 3 gl-float #f (vertex-stride) (vertex-field-offset 'pos))</code> 加 <code>(gl-enable-vertex-attrib-array 0)</code>，每个属性一组。</li>
+        <li><code>(glsl-uniform-setter! prog vert-src frag-src #:prefix "obj-")</code>：从接口表按名字生成 <code>set-obj-u-model!</code> 等。<br>
+            裸写法：<code>(define obj-u-model (uniform-location prog "u_model"))</code> 加 <code>(uniform-set! obj-u-model 'mat-4 model)</code>。</li>
+      </ul>
+
+      <div class="note key">
+        <p><b>顺序原则</b>02 已经先把 raw OpenGL 的编译/缓冲/VAO 流程走过一遍，03–08 再改用便利层把样板收起来；本课新出现的「属性布局」和「uniform setter」也照这个顺序：先看上面的裸写法，再用宏。便捷原语只负责「少写、防错」，不取代基础：裸写法随时可用，名字/类型错在编译期就报，而不是运行期静默失效。</p>
+      </div>
+
+      <h2 id="s9-code">完整代码</h2>
+
+      <p><a class="filelink" href="../code.html?f=09-basic-lighting/basic-lighting.rkt">09-basic-lighting/basic-lighting.rkt</a>，本课全部代码（直接 <code>racket</code> 跑）：</p>
+
+      <div class="code">
+        <div class="code-title">09-basic-lighting/basic-lighting.rkt<a class="srclink" href="../code.html?f=09-basic-lighting/basic-lighting.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">#lang glsl-opengl
+;; ============================================================
+;; 09 · 基础光照：ambient + diffuse + specular
+;; 运行：racket 09-basic-lighting/basic-lighting.rkt
+;; 上一课：08-colors/colors.rkt
+;; ============================================================
+;; 目标：08 课只会"物体色 × 光色"，颜色有了，但整块立方体每一面一样亮——那一步里
+;; 没有"方向"：光从哪来、面朝哪，都不影响结果。本课把方向补上，逐片元算 Phong 三项：
+;;   ambient   保底光：面完全背光时也有点亮度，否则背光面纯黑、不像真实世界
+;;   diffuse   漫反射：面越正对光源越亮，背向为 0（max(dot(n,l), 0)）
+;;   specular  镜面高光：反射方向恰好对着眼睛时才亮（pow(max(dot(v,r),0), 32)）
+;; 要算这三项，片元得知道两件它现在不知道的事：这一点的法线、这一点在世界里的位置。
+;; 于是顶点着色器第一次多传两个量出去（v-normal / v-frag-pos），法线属性（location 1）
+;; 和"法线矩阵"也在本课第一次登场。
+;;
+;; 顶点布局本课也换了写法：用 glsl-struct 把 shader 的 struct 镜像到 CPU 侧，
+;; 步长和偏移全部由字段名给出——03/04 课的 shader-stride-bytes / shader-byte-size
+;; 又往前走了一步。
+
+(require racket/class
+         racket/math                     ; degrees-&gt;radians
+         "../lib/window.rkt"
+         "../lib/matrix.rkt")            ; m-look-at / m-perspective / m-normal-matrix / …
+
+;; ------------------------------------------------------------
+;; 一、窗口尺寸与 aspect（同 06 / 08 课）
+;; ------------------------------------------------------------
+;; 投影要一个 aspect = 宽/高，必须和窗口客户区同源，否则画面会被拉伸。
+(define win-w 800)
+(define win-h 600)
+(define aspect (/ win-w win-h))
+
+;; ------------------------------------------------------------
+;; 二、着色器
+;; ------------------------------------------------------------
+;; 顶点着色器除了把位置算好，还要多带两个插值量给片元：
+;;   v-frag-pos  这个顶点在世界里的位置（片元里插值后 ≈ 每个像素的世界位置）
+;;   v-normal   世界空间的法线（片元里插值后 ≈ 每个像素的法线）
+;; 光照明亮程度必须逐片元算，这两个量就是它要的输入。
+;;
+;; (glsl-shader name form ...) 与 (glsl ...) 一样产出 shader，并额外把编译期接口表
+;; 绑为 name-interface。裸等价： (define name (glsl ...))——但那样接口只能运行期用
+;; (glsl-program-interface name) 取，宏（vertex-layout / uniform-setter）用不了。
+(glsl-shader vert-src
+  (version 330 core)
+  (layout (location 0) in vec-3 pos)       ; 属性名 = CPU 侧 glsl-struct 字段名
+  (layout (location 1) in vec-3 normal)
+  (uniform mat-4 u-model)                   ; 局部 → 世界
+  (uniform mat-4 u-view)                    ; 世界 → 观察
+  (uniform mat-4 u-proj)                    ; 观察 → 裁剪
+  (uniform mat-3 u-normal-matrix)            ; 法线专用的 mat-3，为什么不是 u-model 见 9.2
+  (out vec-3 v-normal)
+  (out vec-3 v-frag-pos)
+  (define (main) void
+    (set! v-normal (* u-normal-matrix normal))
+    (set! v-frag-pos (vec-3 (* u-model (vec-4 pos 1.0))))
+    (set! gl-position (* u-proj (* u-view (* u-model (vec-4 pos 1.0)))))))
+
+;; 物体的片元：本课的全部内容。三项相加，最后乘光色和物色——08 课那一步还在，
+;; 只是现在"光有多少"不再是个常数，而是逐像素算出来的 ambient + diff + spec。
+;;
+;; light-dir（l）从片元指向光源；view-dir（v）从片元指向相机；reflect-dir（r）
+;; 是 l 打到表面上弹开的方向，也就是"光被镜面反射到哪去了"。
+;; 眼睛正好站在 r 上（v 与 r 重合）时就看见高光。
+;; （这里用 Racket 风格的连字符；racket-shader 会换成 GLSL 的 _，生成文本里是 light_dir / v_normal。）
+(glsl-shader frag-src
+  (version 330 core)
+  (in vec-3 v-normal)
+  (in vec-3 v-frag-pos)
+  (uniform vec-3 u-light-pos)               ; 光源位置（世界坐标）
+  (uniform vec-3 u-light-color)             ; 光的颜色（同 08 课）
+  (uniform vec-3 u-view-pos)                ; 相机位置（世界坐标）——高光要它
+  (uniform vec-3 u-object-color)            ; 物体本色（同 08 课）
+  (out vec-4 frag-color)
+  (define (main) void
+    (vec-3 norm (normalize v-normal))
+    (vec-3 light-dir (normalize (- u-light-pos v-frag-pos)))
+    (float ambient 0.1)
+    (float diff (max (dot norm light-dir) 0.0))
+    (vec-3 reflect-dir (reflect (- light-dir) norm))
+    (vec-3 view-dir (normalize (- u-view-pos v-frag-pos)))
+    (float spec (* (pow (max (dot view-dir reflect-dir) 0.0) 32.0) 0.5))
+    (set! frag-color (vec-4 (* (+ ambient diff spec) u-light-color u-object-color) 1.0))))
+
+;; 灯自己的两个 shader（同 08 课思路）：顶点只要位置，片元只把光色原样输出。
+;; 灯是光本身，不是"被光照到的东西"，所以它不算法线、不做那三项。
+;; 注意它只声明 location 0——下面那个 VAO 多开的 normal 槽（location 1）在没有
+;; 对应 in 的 program 里会被 GL 忽略，灯照画不误（08 课末尾预告过这件事）。
+(glsl-shader lamp-vert-src
+  (version 330 core)
+  (layout (location 0) in vec-3 pos)
+  (uniform mat-4 u-model)
+  (uniform mat-4 u-view)
+  (uniform mat-4 u-proj)
+  (define (main) void
+    (set! gl-position (* u-proj (* u-view (* u-model (vec-4 pos 1.0)))))))
+
+(glsl-shader lamp-frag-src
+  (version 330 core)
+  (uniform vec-3 u-light-color)
+  (out vec-4 frag-color)
+  (define (main) void
+    (set! frag-color (vec-4 u-light-color 1.0))))
+
+;; ------------------------------------------------------------
+;; 三、立方体几何：24 个顶点，每个带位置 + 法线
+;; ------------------------------------------------------------
+;; 和 06 / 08 课是同一个立方体、同样的 24 顶点 / 36 索引（06 课解释过为什么不是 8 个：
+;; 每个面得摊自己的一份顶点）。本课一个顶点多带一条法线：法线是"这个面朝哪边"，
+;; 三项光照全靠它。同一个空间角落在不同的面上法线不同（前面 (0,0,1)、右面 (1,0,0)…），
+;; 所以还是 24 个顶点、每个面 4 个。
+;;
+;; 布局不再手写：glsl-struct 把 shader 的 struct 镜像到 CPU 侧——字段名、类型、顺序
+;; 和 shader 里一致，步长和偏移就自动有了。03/04 课的 shader-stride-bytes /
+;; shader-byte-size 已经消灭了字节字面量，这一步再进一步：偏移不再按"第几个字段"数，
+;; 而是按名字自动对齐（见下面 init 里的 glsl-vertex-layout!）。
+(glsl-struct vertex (vec-3 pos) (vec-3 normal))
+
+(define cube-verts
+  (list
+   ;; 后面 z = -0.5，法线朝 -z
+   (vertex (vec-3 -0.5 -0.5 -0.5) (vec-3 0.0 0.0 -1.0))
+   (vertex (vec-3  0.5 -0.5 -0.5) (vec-3 0.0 0.0 -1.0))
+   (vertex (vec-3  0.5  0.5 -0.5) (vec-3 0.0 0.0 -1.0))
+   (vertex (vec-3 -0.5  0.5 -0.5) (vec-3 0.0 0.0 -1.0))
+   ;; 前面 z = +0.5，法线朝 +z
+   (vertex (vec-3 -0.5 -0.5  0.5) (vec-3 0.0 0.0 1.0))
+   (vertex (vec-3  0.5 -0.5  0.5) (vec-3 0.0 0.0 1.0))
+   (vertex (vec-3  0.5  0.5  0.5) (vec-3 0.0 0.0 1.0))
+   (vertex (vec-3 -0.5  0.5  0.5) (vec-3 0.0 0.0 1.0))
+   ;; 左面 x = -0.5，法线朝 -x
+   (vertex (vec-3 -0.5  0.5  0.5) (vec-3 -1.0 0.0 0.0))
+   (vertex (vec-3 -0.5  0.5 -0.5) (vec-3 -1.0 0.0 0.0))
+   (vertex (vec-3 -0.5 -0.5 -0.5) (vec-3 -1.0 0.0 0.0))
+   (vertex (vec-3 -0.5 -0.5  0.5) (vec-3 -1.0 0.0 0.0))
+   ;; 右面 x = +0.5，法线朝 +x
+   (vertex (vec-3  0.5  0.5  0.5) (vec-3 1.0 0.0 0.0))
+   (vertex (vec-3  0.5  0.5 -0.5) (vec-3 1.0 0.0 0.0))
+   (vertex (vec-3  0.5 -0.5 -0.5) (vec-3 1.0 0.0 0.0))
+   (vertex (vec-3  0.5 -0.5  0.5) (vec-3 1.0 0.0 0.0))
+   ;; 底面 y = -0.5，法线朝 -y
+   (vertex (vec-3 -0.5 -0.5 -0.5) (vec-3 0.0 -1.0 0.0))
+   (vertex (vec-3  0.5 -0.5 -0.5) (vec-3 0.0 -1.0 0.0))
+   (vertex (vec-3  0.5 -0.5  0.5) (vec-3 0.0 -1.0 0.0))
+   (vertex (vec-3 -0.5 -0.5  0.5) (vec-3 0.0 -1.0 0.0))
+   ;; 顶面 y = +0.5，法线朝 +y
+   (vertex (vec-3 -0.5  0.5 -0.5) (vec-3 0.0 1.0 0.0))
+   (vertex (vec-3  0.5  0.5 -0.5) (vec-3 0.0 1.0 0.0))
+   (vertex (vec-3  0.5  0.5  0.5) (vec-3 0.0 1.0 0.0))
+   (vertex (vec-3 -0.5  0.5  0.5) (vec-3 0.0 1.0 0.0))))
+
+;; 每个顶点铺平成一个 f32vector（6 个 float = 3 位置 + 3 法线），24 个接起来就是
+;; 整条 VBO。一个字节字面量都没有：交错格式由 glsl-struct 的字段表决定。
+(define cube-data (apply concat-vecs (map vertex-&gt;f32vector cube-verts)))
+
+;; 每个面两个三角形、6 个下标，六个面合计 36（同 06 / 08 课）。
+(define indices
+  (u16-array 0 3 2   2 1 0        ; 后面
+             4 5 6   6 7 4        ; 前面
+             8 9 10  10 11 8      ; 左面
+             12 14 13  14 12 15   ; 右面
+             16 17 18  18 19 16   ; 底面
+             20 22 21  22 20 23)) ; 顶面
+
+;; ------------------------------------------------------------
+;; 四、场景：一个物体 + 一盏灯 + 一台不动的相机
+;; ------------------------------------------------------------
+(define object-color (vec-3 1.0 0.5 0.31))      ; 物体本色：橙（同 08 课）
+(define light-color (vec-3 1.0 1.0 1.0))        ; 光的颜色：白
+(define light-pos (vec-3 1.2 1.0 2.0))          ; 光在世界里的位置：物体右上前方
+(define eye-pos (vec-3 0.0 0.0 3.0))            ; 相机位置：本课不动
+
+;; model 是个固定的倾斜姿态：先绕 x 轴 -12°，再绕 y 轴 15°（从右往左作用）。
+;; 为什么不干脆摆成单位矩阵：相机和立方体中心一样高，轴对齐时会看到前 / 上 / 右
+;; 三个面，而这三个面恰好都朝着光——"背光面只剩环境光"就看不见了。稍微转一下：
+;;   正面    法线 ≈ (0.25, 0.21, 0.95)，正好落在"光与眼睛的中间方向"上 → 中央一块高光
+;;   左面    法线转成 (-0.97, 0, 0.26)，背对光 → 只剩 ambient，但还朝着镜头
+;;   底面    也翻到朝着镜头的一侧、同样背对光 → 也只剩 ambient
+;; 于是 ambient / diffuse / specular 三项在同一帧里都看得见。
+(define model
+  (mat4-mul (m-rotate-y (degrees-&gt;radians 15.0))
+            (m-rotate-x (degrees-&gt;radians -12.0))))
+
+(define object-program #f)
+(define lamp-program #f)
+(define vao #f)
+
+;; 下面用宏写法；裸写法（每个属性一组 gl-vertex-attrib-pointer、每个 uniform 手查位置）
+;; 见教程 9.4。宏只负责生成这些裸调用，不改变 OpenGL 语义。
+;;
+;; uniform 位置不用手查了：glsl-uniform-setter! 从 shader 的编译期接口表按名字生成
+;; setter（类型也自动推）。两个 program 各加前缀，避免同名 uniform 撞。
+;; 裸写法： (define obj-u-model (uniform-location object-program "u_model"))
+;;          (uniform-set! obj-u-model 'mat-4 model)        ; draw 里
+;; glsl-uniform-setter! 把这两步合成 (set-obj-u-model! model)；拼错名字编译期报错。
+(glsl-uniform-setter! object-program vert-src frag-src #:prefix "obj-")
+(glsl-uniform-setter! lamp-program lamp-vert-src lamp-frag-src #:prefix "lamp-")
+
+(define (init)
+  (set! object-program (build-program (gl-vertex-shader vert-src)
+                                      (gl-fragment-shader frag-src)))
+  (set! lamp-program (build-program (gl-vertex-shader lamp-vert-src)
+                                    (gl-fragment-shader lamp-frag-src)))
+
+  ;; 画立体的东西就得开深度测试（06 课）。
+  (gl-enable gl-depth-test)
+
+  ;; ---- VAO / VBO / EBO ----
+  (set! vao (vertex-array-new))
+  (gl-bind-vertex-array vao)
+
+  (define vbo (buffer-new))
+  (gl-bind-buffer gl-array-buffer vbo)
+  (buffer-upload gl-array-buffer cube-data gl-static-draw)
+  ;; 属性布局：shader 的 in 名和 glsl-struct 字段名同名（pos / normal），
+  ;; glsl-vertex-layout! 按名字自动对齐：slot 取自 shader 的 location，
+  ;; 分量/类型/步长/偏移取自 struct 字段表；改名/类型不符会在编译期报错。
+  ;; 裸写法：
+  ;;   (gl-vertex-attrib-pointer 0 3 gl-float #f (vertex-stride) (vertex-field-offset 'pos))
+  ;;   (gl-enable-vertex-attrib-array 0)
+  ;;   (gl-vertex-attrib-pointer 1 3 gl-float #f (vertex-stride) (vertex-field-offset 'normal))
+  ;;   (gl-enable-vertex-attrib-array 1)
+  (glsl-vertex-layout! vert-src vertex)
+
+  (define ebo (buffer-new))
+  (gl-bind-buffer gl-element-array-buffer ebo)
+  (buffer-upload gl-element-array-buffer indices gl-static-draw)
+
+  (gl-bind-vertex-array 0))
+
+(define (draw)
+  (gl-clear-color 0.10 0.12 0.20 1.0)
+  ;; 颜色和深度一起擦（掩码，01 课）。
+  (gl-clear (bitwise-ior gl-color-buffer-bit gl-depth-buffer-bit))
+
+  ;; 相机固定 (0,0,3) 看向原点（同 08 课）。u-view-pos 就是它的位置——片元算高光要用。
+  (define view (m-look-at eye-pos (vec-3 0.0 0.0 0.0) (vec-3 0.0 1.0 0.0)))
+  (define proj (m-perspective (degrees-&gt;radians 45.0) aspect 0.1 100.0))
+
+  (gl-bind-vertex-array vao)
+
+  ;; ---- 物体：逐片元算 ambient + diffuse + specular ----
+  (program-use object-program)
+  ;; setter 的名字和类型都取自 shader 接口；不用再手查 uniform location。
+  (set-obj-u-model! model)
+  (set-obj-u-view! view)
+  (set-obj-u-proj! proj)
+  ;; 法线矩阵是 mat-3，setter 内部自动选 matrix-3fv 且 transpose 固定 #f：
+  ;; lib/matrix.rkt 的矩阵都是列主序，正好是 GL 要的，传 #t 会让它转错。
+  (set-obj-u-normal-matrix! (m-normal-matrix model))
+  (set-obj-u-light-pos! light-pos)
+  (set-obj-u-light-color! light-color)
+  (set-obj-u-view-pos! eye-pos)
+  (set-obj-u-object-color! object-color)
+  (gl-draw-elements gl-triangles 36 gl-unsigned-short 0)
+
+  ;; ---- 灯：同一份 VAO、换个 program，片元只输出光色（同 08 课） ----
+  (program-use lamp-program)
+  ;; 灯比物体小：先缩到 0.2 倍，再搬到 light-pos（从右往左作用在顶点上）。
+  (set-lamp-u-model! (mat4-mul (m-translate light-pos) (m-scale (vec-3 0.2 0.2 0.2))))
+  (set-lamp-u-view! view)
+  (set-lamp-u-proj! proj)
+  (set-lamp-u-light-color! light-color)
+  (gl-draw-elements gl-triangles 36 gl-unsigned-short 0)
+
+  (gl-bind-vertex-array 0))
+
+(define-values (frame canvas)
+  (make-window #:title "09 基础光照"
+               #:width win-w
+               #:height win-h
+               #:init init
+               #:draw draw
+               ;; 窗口尺寸变化、viewport 重设之后被调用，参数是新的客户区宽高。
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+(send frame show #t)
+
+;; 本课没有 timer：立方体是静姿态，没有东西在动，就不必每 16ms 请求一次重绘（同 08 课）。
+;; canvas 也用不着 focus——本课不收键盘。
+
+;; ------------------------------------------------------------
+;; 试试看（改完重跑）：
+;;   · ambient 从 0.1 改成 0.5：背光那两面立刻被抬亮，整块立方体的明暗对比变平。
+;;   · shininess 从 32.0 改成 4.0：高光变大一整片、边缘发糊——指数越小越发散。
+;;   · light-pos 改成 (vec-3 0.0 3.0 0.0)（正上方）：能看见的三个面里没有一个正对光，
+;;     diff 几乎全变成 0，整块立方体暗下来只剩 ambient（正对光的顶面这会儿正好背向镜头，
+;;     看不见）。把 light-pos 再改成 (vec-3 -2.0 -0.5 2.0)（左下前方）就反过来：现在
+;;     亮的那面变暗、现在暗的左下面变亮，高光也跟着挪到那两面上。
+;;   · 给 model 加一个非等比缩放，例如
+;;       (define scaled (mat4-mul (m-scale (vec-3 1.5 1.0 1.0)) model))
+;;     现在上传的还是 (m-normal-matrix scaled)，法线仍垂直于表面，画面正常。
+;;     再把这一行换成"只取左上 3x3、不逆转置"的 naive 版本——照 lib/matrix.rkt
+;;     里 m-normal-matrix 的写法，把 mat3-inverse / mat3-transpose 两层去掉：
+;;       (mat-3 (mat4-ref scaled 0 0) (mat4-ref scaled 0 1) (mat4-ref scaled 0 2)
+;;             (mat4-ref scaled 1 0) (mat4-ref scaled 1 1) (mat4-ref scaled 1 2)
+;;             (mat4-ref scaled 2 0) (mat4-ref scaled 2 1) (mat4-ref scaled 2 2))
+;;     法线被 1.5 倍放大带偏，正面的高光立刻暗下去、位置也挪了（高光对法线方向
+;;     的误差最敏感）；把缩放比 1.5 换成 4.0，连背光面的明暗都会跟着变。
+;; ============================================================</code></pre>
+      </div>
+
+      <h2 id="s9-exercise">试试看</h2>
+
+      <ol class="exercise">
+        <li>把 <code>ambient</code> 从 <code>0.1</code> 改成 <code>0.5</code>：背光那两面（左面和底面）立刻被抬亮，整块立方体的明暗对比变平——这就是「环境光是保底亮度」的直观样子。</li>
+        <li>把 <code>spec</code> 里的指数 <code>32.0</code> 改成 <code>4.0</code>：高光不再是一个小圆点，而是糊成一大片。指数越小越像磨砂，越大越像镜子。</li>
+        <li>把 <code>light-pos</code> 改成 <code>(vec-3 0.0 3.0 0.0)</code>（正上方）：能看见的三个面没有一个正对光，<code>diff</code> 几乎全变成 0，整块立方体暗下来只剩 ambient——「正上方最该亮的顶面」这时恰好背向镜头（相机和立方体中心一样高，顶面只能看到一条边），别指望看到它变亮。再把 <code>light-pos</code> 换成 <code>(vec-3 -2.0 -0.5 2.0)</code>（左下前方）就反过来了：现在亮的那面变暗、现在暗的左面和底面变亮，高光也跟着挪到它们上面。</li>
+        <li>给 <code>model</code> 加一个非等比缩放：<code>(define scaled (mat4-mul (m-scale (vec-3 1.5 1.0 1.0)) model))</code>，先照原样上传 <code>(m-normal-matrix scaled)</code>——法线仍然垂直于表面、画面正常。再把上传换成 naive 版本（只取左上 3×3、去掉逆转置；现成的写法在本课源码文件末尾的注释里），正面的高光立刻暗下去：法线被 x 方向拉走约 11.5°，<code>dot(v, r)</code> 跟着偏，高光那一项从 0.41 只剩 0.15；把 1.5 换成 4.0，法线偏了 42.6°、高光彻底消失——「光照错在哪」看得一清二楚。改完记得换回来。</li>
+        <li>把 <code>light-pos</code>（以及灯立方体的位置）的 z 从 <code>2.0</code> 改成 <code>0.0</code>——也就是 08 课的机位：灯会走进画面右上角，同时高光从正面中央挪开。对照两课就能看清「光的位置」同时管着两件事：灯立方体画在哪、以及三项光照各自往哪个方向算。</li>
+      </ol>
+
+      <h2 id="s9-summary">小结</h2>
+
+      <table class="spec">
+        <thead>
+          <tr>
+            <th>概念</th>
+            <th>一句话</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>ambient / diffuse / specular</td>
+            <td>保底光；<code>max(dot(n,l),0)</code> 管面朝向；<code>pow(max(dot(v,r),0),32)</code> 管镜面反射；三项相加再乘光色与物色</td>
+          </tr>
+          <tr>
+            <td>逐片元 vs 逐顶点</td>
+            <td>在片元里算插值后的法线，曲面才有平滑高光；在顶点里算完再插值颜色，会看到面与面之间的硬边</td>
+          </tr>
+          <tr>
+            <td>法线属性</td>
+            <td>顶点第一次多带一条 vec-3 法线（location 1），片元拿它算三项</td>
+          </tr>
+          <tr>
+            <td>normal matrix</td>
+            <td><code>transpose(inverse(mat-3(model)))</code>；非等比缩放时直接拿 model 转法线会把它带歪（本课这套参数下差 11.5°）</td>
+          </tr>
+          <tr>
+            <td>mat-3 上传</td>
+            <td><code>(set-obj-u-normal-matrix! (m-normal-matrix model))</code> 内部选 <code>gl-uniform-matrix-3fv</code> 且 transpose 固定 <code>#f</code>——列主序与 lib/matrix.rkt 一致</td>
+          </tr>
+          <tr>
+            <td>glsl-struct</td>
+            <td>把 shader 的顶点结构镜像到 CPU 侧；<code>glsl-vertex-layout!</code> 按名字自动对齐，生成 attrib 调用（slot 取自 shader 的 location，分量/步长/偏移取自字段表）</td>
+          </tr>
+        </tbody>
+      </table>
+
+    </main>
+
+    <nav class="toc">
+      <b>本节目录</b>
+      <ol>
+        <li><a href="#s9-1">9.1 三项各管什么</a></li>
+        <li><a href="#s9-1-1">9.1.1 点积与夹角</a></li>
+        <li><a href="#s9-1-2">9.1.2 Lambert 漫反射</a></li>
+        <li><a href="#s9-1-3">9.1.3 Phong 高光</a></li>
+        <li><a href="#s9-1-4">9.1.4 三项相加</a></li>
+        <li><a href="#s9-1-5">9.1.5 先在 CPU 上算三个点</a></li>
+        <li><a href="#s9-2">9.2 法线为什么要 inverse-transpose</a></li>
+        <li><a href="#s9-3">9.3 在片元里算 + 布局用 glsl-struct</a></li>
+        <li><a href="#s9-4">9.4 三个便捷原语与它们的裸写法</a></li>
+        <li><a href="#s9-code">完整代码</a></li>
+        <li><a href="#s9-exercise">试试看</a></li>
+        <li><a href="#s9-summary">小结</a></li>
+      </ol>
+    </nav>
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="../08-colors/index.html">← 08 颜色</a>
+    <a class="next" href="../10-lighting-maps/index.html">10 光照贴图 →</a>
+  </nav>
+
+  <footer class="site-footer">
+    <p>本教程参照 learnopengl.com 的章节节奏，代码用 racket-shader 写。纯静态站，源码可在浏览器里直接查看。</p>
+  </footer>
+
+</div>
+</body>
+</html>

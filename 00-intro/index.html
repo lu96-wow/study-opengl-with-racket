@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>00 · OpenGL 是什么 — study-opengl</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/highlight.js" defer></script>
+</head>
+<body>
+<div class="page">
+
+  <header class="site-header">
+    <a class="site-title" href="../index.html">study-opengl</a>
+    <nav class="crumbs"><a href="../index.html">课程</a> / <span>00 · OpenGL 是什么</span></nav>
+  </header>
+
+  <div class="layout">
+    <main class="content">
+
+      <h1>OpenGL 是什么</h1>
+
+      <p class="goal">这一节不开窗口、不画图，只建立四个后面每节课都要用到的概念：CPU 和 GPU 怎么分工、OpenGL 到底是什么、什么叫状态机、什么叫对象。</p>
+
+      <p>下面这条命令跑的是本节的源码，它不开窗口，只在终端把课程目录打印一遍——打印出来的这份目录就是后面每节课的索引：</p>
+
+      <div class="run"><span class="prompt">$</span> racket 00-intro/intro.rkt</div>
+
+      <h2 id="s0-1">0.1 CPU 与 GPU 的分工</h2>
+
+      <p>你写的 Racket 代码跑在 CPU 上。CPU 的核心不多（家用机一般几个到几十个），每一个都很快，强在判断、跳转、调度——也就是决定「接下来该做什么」这类串行的活。这一帧画什么、用哪个着色器、传什么参数，都是 CPU 定下来的。</p>
+
+      <p>显卡上的 GPU 正相反：它有成千上万个很小的核心，单个并不快，但能同时对一大批数据做同样的运算。它不擅长复杂的控制流，擅长的是「把同一段运算套到一百万个顶点、一百万个像素上」。</p>
+
+      <p>所以图形程序的分工是固定的：CPU 决定画什么，GPU 负责把每个顶点、每个像素都算一遍。OpenGL 就是 CPU 向 GPU 下命令的那条通道——它自己不计算图形，只负责把「要画什么」传下去。</p>
+
+      <h2 id="s0-2">0.2 OpenGL 是规范，不是库</h2>
+
+      <p>OpenGL 不是一份可以下载安装的库，它是一份规范（specification）：规定有哪些函数、叫什么名字、参数是什么、调用之后必须产生什么结果。</p>
+
+      <p>真正干活的是显卡驱动里的实现。同一份代码在你的机器上跑的是 NVIDIA / AMD / Intel 驱动里的那套实现，换台机器就是另一套——只要两边都照规范做，程序就不用改。也正因为如此，「我这儿能跑」和「别人的机器上也能跑」是两件事。</p>
+
+      <p>Racket 这边用到的名字来自 <code>opengl</code> 包，它是规范里那些 C 函数的绑定：<code>gl-clear</code> 对应 C 的 <code>glClear</code>，<code>gl-viewport</code> 对应 <code>glViewport</code>。<code>racket-shader</code> 提供 <code>#lang glsl</code> 这套 DSL（用 S 表达式写 GLSL），<code>racket-shader-opengl</code> 再把它和 <code>opengl</code> 绑在一起，负责编译、链接和类型大小计算，让你不必手写着色器字符串。</p>
+
+      <h2 id="s0-3">0.3 状态机：先设状态，再发命令</h2>
+
+      <p>OpenGL 内部记着一大堆状态：清屏色是什么、当前绑着哪块缓冲、当前用哪个着色器程序……每条命令作用的对象都是「当前状态」，参数里通常不带目标。</p>
+
+      <p>最典型的一对是 <code>gl-clear-color</code> 和 <code>gl-clear</code>：前者只是「记住」一个颜色，什么都不画；后者才真的按记住的颜色把缓冲擦掉。顺序反了就白设。下面这两行摘自第 1 课的绘制代码：</p>
+
+      <div class="code">
+        <div class="code-title">01-window/window.rkt（on-paint 里）<a class="srclink" href="../code.html?f=01-window/window.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">         (gl-clear-color (* 0.5 (+ 1.0 (sin t)))
+                         (* 0.5 (+ 1.0 (sin (+ t 2.0))))
+                         (* 0.5 (+ 1.0 (sin (+ t 4.0))))
+                         1.0)
+         (gl-clear gl-color-buffer-bit)
+</code></pre>
+      </div>
+
+      <div class="note key">
+        <p><b>关键点</b>以后所有「先 bind 再操作」的写法都源于此：想往哪块缓冲传数据，先 <code>gl-bind-buffer</code> 把它绑成当前缓冲；想用哪个着色器程序，先 <code>program-use</code>。命令本身不带目标，目标来自当前状态。</p>
+      </div>
+
+      <h2 id="s0-4">0.4 对象与 id</h2>
+
+      <p>GPU 上的资源——缓冲、着色器程序、纹理——统称对象（object）。CPU 这边拿不到对象本身，只拿到一个整数 id：<code>buffer-new</code>（底层是 <code>gl-gen-buffers</code>）生成 id 交给你，此后所有涉及这块缓冲的命令都用这个整数去指它。</p>
+
+      <p>要记住 id 只是名字，本身不含数据。真正的数据在显存里，得用 <code>buffer-upload</code>（底层是 <code>gl-buffer-data</code>）这类命令从 CPU 侧的内存拷过去。所以「缓冲」这个词有时指显存里那块存储、有时指那个整数，读文档时看上下文。</p>
+
+      <h2 id="s0-5">0.5 渲染管线主线</h2>
+
+      <p>后面几节课讲的其实就是下面这条主线上的每一格：</p>
+
+      <figure class="figure">
+        <svg viewBox="0 0 724 88" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>OpenGL 渲染管线主线：顶点数据 → 顶点着色器 → 图元装配 → 光栅化 → 片元着色器 → 屏幕</title>
+          <defs>
+            <marker id="pipe-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+            </marker>
+          </defs>
+
+          <rect x="8" y="18" width="76" height="40" rx="8" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="46" y="43" text-anchor="middle" font-size="14" fill="var(--fg)">顶点数据</text>
+
+          <rect x="124" y="18" width="120" height="40" rx="8" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <text x="184" y="43" text-anchor="middle" font-size="14" fill="var(--accent)">[顶点着色器]</text>
+          <text x="184" y="76" text-anchor="middle" font-size="13" fill="var(--accent)">可编程</text>
+
+          <rect x="284" y="18" width="76" height="40" rx="8" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="322" y="43" text-anchor="middle" font-size="14" fill="var(--fg)">图元装配</text>
+
+          <rect x="400" y="18" width="64" height="40" rx="8" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="432" y="43" text-anchor="middle" font-size="14" fill="var(--fg)">光栅化</text>
+
+          <rect x="504" y="18" width="120" height="40" rx="8" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <text x="564" y="43" text-anchor="middle" font-size="14" fill="var(--accent)">[片元着色器]</text>
+          <text x="564" y="76" text-anchor="middle" font-size="13" fill="var(--accent)">可编程</text>
+
+          <rect x="664" y="18" width="52" height="40" rx="8" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="690" y="43" text-anchor="middle" font-size="14" fill="var(--fg)">屏幕</text>
+
+          <line x1="88" y1="38" x2="121" y2="38" stroke="var(--line)" stroke-width="1.5" marker-end="url(#pipe-arrow)"/>
+          <line x1="248" y1="38" x2="281" y2="38" stroke="var(--line)" stroke-width="1.5" marker-end="url(#pipe-arrow)"/>
+          <line x1="364" y1="38" x2="397" y2="38" stroke="var(--line)" stroke-width="1.5" marker-end="url(#pipe-arrow)"/>
+          <line x1="468" y1="38" x2="501" y2="38" stroke="var(--line)" stroke-width="1.5" marker-end="url(#pipe-arrow)"/>
+          <line x1="628" y1="38" x2="661" y2="38" stroke="var(--line)" stroke-width="1.5" marker-end="url(#pipe-arrow)"/>
+        </svg>
+        <figcaption class="figcaption">图 0-1 OpenGL 渲染管线主线</figcaption>
+      </figure>
+
+      <p>CPU 把顶点数据准备好交给 GPU，GPU 按顺序跑过这些阶段，最后落在屏幕的像素上。中间三个固定阶段各干一件事：图元装配把顶点拼成三角形，光栅化把三角形变成一堆像素，再由片元着色器决定每个像素什么颜色。第 2 课起，我们讲的就是怎么把数据喂进这条管线、以及怎么写那两个方括号里的程序。</p>
+
+      <div class="note key">
+        <p><b>关键点</b>方括号里那两段（图 0-1 标蓝的）是你写的程序，叫 shader，用 GLSL 写；其余阶段是 GPU 的固定行为，只能设参数、不能改代码。</p>
+      </div>
+
+      <h2 id="s0-6">0.6 core profile 与 version 330 core</h2>
+
+      <p>早期 OpenGL（2.x 及以前）有一整套「立即模式」：用 <code>glBegin</code> / <code>glEnd</code> 把顶点一句一句喂进去，管线大部分是固定的，你能插手的只有开关和几个固定函数。</p>
+
+      <p>现代 OpenGL 只留可编程管线，那套旧接口在 core profile 里已经被删掉了。开 core profile 就是在说「我只用现代管线」。</p>
+
+      <p>这件事在代码里有两端：Racket 那边是 <code>(send cfg set-legacy? #f)</code>（不启用旧式固定管线），GLSL 那边是每个 shader 的第一行 <code>(version 330 core)</code>。两边说的是同一件事，必须对上。第 1 课开窗口时会写 <code>set-legacy? #f</code>，第 2 课每个 shader 的第一行会写 <code>(version 330 core)</code>。</p>
+
+      <div class="note warn">
+        <p><b>坑</b>两端不匹配会直接失败：还开着 legacy 却写 <code>(version 330 core)</code>，或者在 <code>330 core</code> 下用旧版语法，都会在创建上下文或编译 shader 时报错，而报错信息通常不会直说「版本不对」。遇到莫名其妙的着色器错误时，先回来检查这两行。</p>
+      </div>
+
+      <h2 id="s0-7">0.7 计算放在哪：GPU 不是唯一选择</h2>
+
+      <p>前面说「CPU 决定画什么，GPU 负责算」，这句话容易让人误以为「图形计算只能在 GPU 上做」。不是的。矩阵乘法、光照公式、纹理采样，本质上都是普通的数学运算；<b>同一套公式既可以在 CPU 上算，也可以在 GPU 上算</b>，区别只是「在哪里算、算完怎么送到下一步」。</p>
+
+      <p>OpenGL API 自己并不计算图形。它主要做三件事：</p>
+
+      <ol>
+        <li><b>传数据</b>：把顶点、索引、纹理、uniform 从 CPU 内存送到 GPU。</li>
+        <li><b>设状态</b>：告诉 GPU 接下来用哪个 program、哪个 VAO、开不开深度测试。</li>
+        <li><b>启动计算</b>：<code>gl-draw-*</code> 让 GPU 跑顶点/片元着色器。</li>
+      </ol>
+
+      <p>真正「算」的是你写的 shader，或者 CPU 侧的 Racket 代码。同一件事通常有两种做法：</p>
+
+      <table class="spec">
+        <thead><tr><th>任务</th><th>CPU 做法</th><th>GPU 做法</th><th>本教程为什么选 GPU</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>顶点变换</td>
+            <td>CPU 先算好每个顶点的世界/裁剪坐标，再上传结果</td>
+            <td>上传原始顶点 + 矩阵，顶点着色器逐个乘</td>
+            <td>顶点多、相机每帧变；GPU 并行且不用回传中间结果</td>
+          </tr>
+          <tr>
+            <td>光照</td>
+            <td>CPU 逐顶点算颜色，或离线烘焙成顶点色/lightmap</td>
+            <td>片元着色器逐像素算 diffuse/specular</td>
+            <td>像素数远大于顶点数，逐像素质量更好</td>
+          </tr>
+          <tr>
+            <td>纹理采样</td>
+            <td>CPU 自己按 UV 取像素，再写进顶点色/新纹理</td>
+            <td>纹理单元按 UV 采样</td>
+            <td>硬件过滤/mipmap，且采样发生在每个片元</td>
+          </tr>
+          <tr>
+            <td>模型解析</td>
+            <td>CPU 读 OBJ/glTF、拼顶点/索引</td>
+            <td>GPU 不适合做文件 I/O 和串行解析</td>
+            <td>这是 CPU 的活；解析完再上传</td>
+          </tr>
+          <tr>
+            <td>文字</td>
+            <td>CPU 用字体引擎把字画成 bitmap</td>
+            <td>把 bitmap 当纹理，画 2D/3D quad</td>
+            <td>混合：CPU 生成字形，GPU 贴到几何上</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>所以「用 OpenGL」不等于「所有计算都在 GPU」。更准确的说法是：<b>把适合并行、数据量大的计算搬到 GPU；把串行、一次性、文件 I/O 和复杂控制流留在 CPU。</b>判断标准可以先用这三条：</p>
+
+      <ul>
+        <li>同一段公式要对成千上万个顶点/像素重复吗？→ 优先 GPU。</li>
+        <li>结果每帧都要回读到 CPU 吗？→ 回读通常很贵，尽量留在 GPU。</li>
+        <li>是一次性的准备/解析/小规模计算吗？→ CPU 更简单。</li>
+      </ul>
+
+      <div class="note key">
+        <p><b>后面怎么读</b>正式章节会随着用例讲 API；复习章节会把「API 调用」和「它触发的计算」重新对一遍，并给出 CPU 版和 GPU 版的同一公式。你会发现：API 的数量其实不多，真正变化的是<b>计算放在哪、数据怎么流动</b>。</p>
+      </div>
+
+      <h2 id="s0-8">0.8 GPU 硬件与数据模型（加深）</h2>
+
+      <p>0.1 和 0.7 只讲了“CPU 决定、GPU 并行”和“计算放在哪”。这一节再往下走一层：GPU 里大致有哪些硬件单元、OpenGL 的数据模型是什么、以及每个常用 GL 调用到底在 GPU 上留下什么。不同厂商的 GPU 细节不同，下面是现代桌面 GPU 的典型结构。</p>
+
+      <h3 id="s0-8-1">0.8.1 GPU 不是“很多 CPU 核”</h3>
+
+      <table class="spec">
+        <thead><tr><th></th><th>CPU</th><th>GPU</th></tr></thead>
+        <tbody>
+          <tr><td>核心</td><td>少量、复杂、强单线程</td><td>大量、简单、强吞吐</td></tr>
+          <tr><td>擅长</td><td>分支、跳转、串行、低延迟</td><td>同一段代码套到大量数据上</td></tr>
+          <tr><td>执行模型</td><td>乱序、预测、深缓存</td><td>SIMT：一组线程锁步执行同一条指令</td></tr>
+          <tr><td>弱点</td><td>并行度有限</td><td>分支发散、串行、复杂控制流</td></tr>
+        </tbody>
+      </table>
+
+      <p>GPU 用大量线程来隐藏内存延迟：一个线程等显存时，调度器切到另一个线程。它不追求“单线程很快”，而是追求“很多线程同时推进”。</p>
+
+      <h3 id="s0-8-2">0.8.2 统一着色器核心与 SIMT</h3>
+
+      <p>现代 GPU 的顶点、几何、片元、compute shader 通常跑在同一批<b>统一着色器核心</b>上，只是调度阶段不同。线程按 warp / wavefront 分组（常见 32 或 64 个），同一组执行同一条指令；遇到分支时，不同分支会分时执行，这叫<b>发散</b>。</p>
+
+      <p>这解释了两件事：</p>
+
+      <ul>
+        <li>片元 shader 里写“每个像素走不同分支”的代价可能很高；能写成无分支/统一控制流就尽量写。</li>
+        <li>寄存器、shared memory 用量会影响同时驻留的 warp 数（occupancy）；occupancy 太低，内存延迟藏不住。</li>
+      </ul>
+
+      <p>顶点 shader 每个顶点执行一次；片元 shader 每个被三角形覆盖的片元执行一次；compute shader 按 workgroup 执行。它们不是“CPU 函数”，而是被 GPU 调度器批量调用的程序。</p>
+
+      <h3 id="s0-8-3">0.8.3 固定功能单元</h3>
+
+      <p>除了可编程核心，GPU 还有一批固定功能单元：</p>
+
+      <table class="spec">
+        <thead><tr><th>单元</th><th>作用</th></tr></thead>
+        <tbody>
+          <tr><td>命令前端 / 调度器</td><td>接收驱动提交的命令，分发给各单元</td></tr>
+          <tr><td>Input Assembler（IA）</td><td>按 VAO 描述从 VBO/EBO 取顶点和索引</td></tr>
+          <tr><td>图元装配 / 裁剪</td><td>拼三角形、做视锥裁剪、背面剔除</td></tr>
+          <tr><td>光栅化器</td><td>把三角形变成片元，插值 varying</td></tr>
+          <tr><td>纹理单元（TMU）</td><td>按 UV 做寻址、过滤、mipmap、纹理缓存</td></tr>
+          <tr><td>ROP</td><td>深度/模板测试、混合、写 framebuffer</td></tr>
+        </tbody>
+      </table>
+
+      <p>你写的 shader 只覆盖“顶点/片元程序”两段；IA、光栅化、ROP 这些是固定的，只能设状态（`gl-enable`、`gl-blend-func`、`gl-viewport` 等）。</p>
+
+      <h3 id="s0-8-4">0.8.4 内存层次与带宽</h3>
+
+      <pre><code>寄存器（每线程） → shared / L1（每计算单元） → L2（全 GPU） → 显存 VRAM → PCIe → 系统内存 CPU</code></pre>
+
+      <p>越往左越快、越小；越往右越慢、越大。CPU 和 GPU 之间隔着 PCIe，带宽通常远低于显存带宽，所以：</p>
+
+      <ul>
+        <li>顶点、纹理、索引尽量只上传一次，之后留在显存。</li>
+        <li>每帧只传变化的小数据：矩阵、光源参数、少量 uniform。</li>
+        <li>避免 GPU → CPU 回读（`gl-read-pixels` / `gl-finish` 会等待 GPU，打断流水线）。</li>
+        <li>大量小 draw call 的 CPU 提交开销和状态切换也可能成为瓶颈，和显存带宽是两回事。</li>
+      </ul>
+
+      <h3 id="s0-8-5">0.8.5 OpenGL 数据模型</h3>
+
+      <p>OpenGL 用“对象 + 绑定点 + 状态机”描述 GPU 资源。名字（GLuint）只是句柄，背后是驱动管理的内存/状态。</p>
+
+      <table class="spec">
+        <thead><tr><th>对象</th><th>数据模型</th><th>谁使用</th></tr></thead>
+        <tbody>
+          <tr><td>Buffer（VBO/EBO/UBO/SSBO）</td><td>线性字节块</td><td>IA / shader / uniform 系统</td></tr>
+          <tr><td>Texture</td><td>图像 + 采样参数 + mip 链</td><td>TMU / 片元 shader</td></tr>
+          <tr><td>Shader / Program</td><td>编译后的 GPU 代码 + uniform 存储</td><td>调度器 / shader 核心</td></tr>
+          <tr><td>VAO</td><td>顶点属性格式 + buffer 绑定</td><td>IA</td></tr>
+          <tr><td>Framebuffer</td><td>颜色/深度/模板附件</td><td>ROP</td></tr>
+        </tbody>
+      </table>
+
+      <p>shader 的输入也分得很清楚：</p>
+
+      <ul>
+        <li><b>attribute</b>：每顶点一份，从 VBO 经 IA 取。</li>
+        <li><b>uniform</b>：一次 draw 内共享，来自 program 的 uniform 存储/常量缓存。</li>
+        <li><b>texture / sampler</b>：TMU 资源+采样状态。</li>
+        <li><b>varying</b>：顶点 → 片元的插值数据，存在片上，不落显存。</li>
+      </ul>
+
+      <p>GL 调用大多是“把命令放进队列”，CPU 不一定等 GPU 做完。只有回读、`gl-finish`、查询结果等操作才会强制同步。</p>
+
+      <h3 id="s0-8-6">0.8.6 每个常用 GL 调用在 GPU 上做什么</h3>
+
+      <table class="spec">
+        <thead><tr><th>调用</th><th>GPU/驱动侧的实际作用</th></tr></thead>
+        <tbody>
+          <tr><td><code>gl-gen-buffers</code></td><td>分配名字/句柄；通常还不分配显存</td></tr>
+          <tr><td><code>gl-bind-buffer</code></td><td>改上下文/VAO 的绑定状态；不拷贝数据</td></tr>
+          <tr><td><code>gl-buffer-data</code></td><td>分配 buffer 存储，把 CPU 字节经驱动/ DMA 拷进去；可能因 buffer 正在使用而等待</td></tr>
+          <tr><td><code>gl-buffer-sub-data</code></td><td>局部更新；可能触发同步，适合少量动态数据</td></tr>
+          <tr><td><code>gl-vertex-attrib-pointer</code></td><td>在 VAO 里记录“第几槽、几个分量、类型、stride、offset、哪个 buffer”；不搬数据</td></tr>
+          <tr><td><code>gl-enable-vertex-attrib-array</code></td><td>VAO 状态：打开某个属性槽</td></tr>
+          <tr><td><code>gl-gen-textures</code></td><td>分配纹理名字/句柄</td></tr>
+          <tr><td><code>gl-bind-texture</code></td><td>把纹理绑到当前纹理单元；改状态</td></tr>
+          <tr><td><code>gl-tex-image-2d</code></td><td>分配纹理存储，拷贝像素，可能做格式转换/行对齐</td></tr>
+          <tr><td><code>gl-tex-parameter-i</code></td><td>设置 sampler 状态（过滤、wrap）</td></tr>
+          <tr><td><code>gl-generate-mipmap</code></td><td>在 GPU 上生成 mip 链（一次小型滤波计算）</td></tr>
+          <tr><td><code>gl-create-shader</code> / <code>gl-shader-source</code> / <code>gl-compile-shader</code></td><td>驱动把 GLSL 编译成 GPU ISA；错误进 info log</td></tr>
+          <tr><td><code>gl-create-program</code> / <code>gl-attach-shader</code> / <code>gl-link-program</code></td><td>链接各阶段，分配 uniform 位置，生成最终 GPU 程序</td></tr>
+          <tr><td><code>gl-use-program</code></td><td>切换当前 program；可能触发管线状态切换</td></tr>
+          <tr><td><code>gl-uniform-*</code></td><td>写 program 的 uniform 存储/常量缓存；不启动计算</td></tr>
+          <tr><td><code>gl-active-texture</code> / <code>gl-bind-texture</code></td><td>选择纹理单元并绑定纹理</td></tr>
+          <tr><td><code>gl-enable</code> / <code>gl-blend-func</code> / <code>gl-depth-mask</code></td><td>改 ROP/固定功能状态</td></tr>
+          <tr><td><code>gl-viewport</code></td><td>设置 NDC → 窗口像素的变换</td></tr>
+          <tr><td><code>gl-clear</code></td><td>把 clear 命令排进队列；ROP 快速清屏</td></tr>
+          <tr><td><code>gl-draw-arrays</code> / <code>gl-draw-elements</code></td><td>启动一次 draw：IA 取顶点 → 顶点 shader → 裁剪/光栅化 → 片元 shader → ROP</td></tr>
+          <tr><td><code>gl-read-pixels</code> / <code>gl-finish</code></td><td>等待 GPU 完成并回读/同步；通常是性能杀手</td></tr>
+          <tr><td><code>gl-delete-*</code></td><td>标记删除；GPU 可能等资源不再使用后才真正释放</td></tr>
+        </tbody>
+      </table>
+
+      <h3 id="s0-8-7">0.8.7 一次 draw 的完整生命周期</h3>
+
+      <pre><code>CPU: 设状态（program / VAO / texture / uniform）
+  → 提交 draw 命令
+GPU 前端: 取命令
+  → IA: 按 VAO 从 VBO/EBO 取索引和顶点
+  → 顶点 shader: 每个顶点一次，输出 clip 坐标 + varying
+  → 图元装配 / 裁剪 / 剔除
+  → 光栅化: 三角形 → 片元，插值 varying
+  → 片元 shader: 每个片元一次，采样纹理/算光照
+  → ROP: 深度/模板测试、混合、写 framebuffer
+  → 屏幕</code></pre>
+
+      <p>CPU 通常在这条流水线还没跑完时就已经返回、继续提交下一帧命令。只有你显式同步或回读，才会等 GPU。</p>
+
+      <h3 id="s0-8-8">0.8.8 对写代码的意义</h3>
+
+      <ul>
+        <li><b>少改状态</b>：相同 program/VAO/纹理的物体尽量放一起画。</li>
+        <li><b>少回读</b>：GPU → CPU 很贵；需要的结果尽量留在 GPU。</li>
+        <li><b>数据常驻</b>：静态 VBO/纹理只传一次；每帧只传小 uniform。</li>
+        <li><b>减少 overdraw</b>：不透明物体从前到后画，透明物体从后到前。</li>
+        <li><b>避免 shader 发散</b>：片元里少写“每个像素走不同分支”的重逻辑。</li>
+        <li><b>先测量再优化</b>：瓶颈可能在 CPU 提交、带宽、填充率或 shader 计算，不一定在同一处。</li>
+      </ul>
+
+      <div class="note key">
+        <p><b>一句话</b>GL 调用绝大多数只是“改状态 / 搬数据 / 排队”；真正让 GPU 大规模并行计算的是 draw call 触发的顶点/片元 shader。理解硬件单元和数据模型，才知道每个调用在 GPU 上留下了什么、以及为什么这样组织代码。</p>
+      </div>
+
+      <h2 id="s0-code">完整代码</h2>
+
+      <p><a class="filelink" href="../code.html?f=00-intro/intro.rkt">00-intro/intro.rkt</a> 是一个普通的 Racket 脚本，只把上面那份课程目录打印出来，一行 OpenGL 都没调用：</p>
+
+      <div class="code">
+        <div class="code-title">00-intro/intro.rkt<a class="srclink" href="../code.html?f=00-intro/intro.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">#lang racket/base
+;; ============================================================
+;; 00 · 开始之前
+;; 运行：racket 00-intro/intro.rkt      （不开窗口，只在终端打印课程目录）
+;; 教程页：00-intro/index.html
+;; ============================================================
+;; 每节课都是「一个目录 = 一页 HTML 教程 + 可直接跑起来的源码」。
+;; 教程页讲原理和图示，源码文件里的注释讲这一行在干什么，两边对着读。
+;;
+;; 读代码之前先知道四件事就够了：
+;;
+;;   1. CPU（跑 Racket）决定画什么；GPU（显卡）并行地算顶点和像素。
+;;   2. OpenGL 是一套给 GPU 下命令的标准，命令都以 gl- 开头。
+;;   3. OpenGL 是状态机：先设状态，再发命令（比如先绑缓冲、再传数据）。
+;;   4. GPU 上的资源（缓冲、着色器程序、纹理……）叫"对象"，用整数 id 引用。
+;;
+;; 渲染管线（记住这一条主线就够）：
+;;   顶点数据 → [顶点着色器] → 图元装配 → 光栅化 → [片元着色器] → 屏幕
+;;   方括号里是可编程的两段小程序，叫 shader，用 GLSL 写。
+;;
+;; 命名约定：
+;;   gl-array-buffer 这类是 OpenGL 内置常量的 Racket 改名（C 里写 GL_ARRAY_BUFFER）；
+;;   vec-3 / build-program / shader-byte-size 这些来自 racket-shader；
+;;   vertices / vbo / program / init / draw 才是本教程自己起的名字。
+
+;; 课程表：节号 / 标题 / 源码文件 / 一句话说明。
+;; 教程页统一是 &lt;目录&gt;/index.html，所以不单独列。
+(define course
+  (list (list "00" "OpenGL 是什么"
+              (list "00-intro/intro.rkt")
+              "CPU 下命令、GPU 并行算；状态机、对象、管线主线")
+        (list "01" "开一扇窗口"
+              (list "01-window/window.rkt")
+              "OpenGL 不提供窗口；上下文、双缓冲、事件驱动的主循环")
+        (list "02" "第一个三角形"
+              (list "02-hello-triangle/triangle.rkt"
+                    "02-hello-triangle/rectangle.rkt")
+              "VBO 存数据、VAO 记怎么读、EBO 省下重复顶点")
+        (list "03" "着色器"
+              (list "03-shaders/shaders.rkt")
+              "GLSL 类型、阶段间传值、uniform、多属性交错布局")
+        (list "04" "纹理"
+              (list "04-textures/textures.rkt")
+              "UV 采样、环绕、过滤、mipmap、纹理单元")
+        (list "05" "变换"
+              (list "05-transformations/transform.rkt")
+              "平移/旋转/缩放都是乘矩阵；组合顺序从右往左作用")
+        (list "06" "坐标系"
+              (list "06-coordinate-systems/coordinates.rkt")
+              "model/view/projection 三个空间；深度缓冲与透视除法")
+        (list "07" "相机"
+              (list "07-camera/camera.rkt"
+                    "07-camera/camera-walk.rkt")
+              "look-at 三基推导；绕圈、自由相机、按键状态与连续移动")
+        (list "08" "颜色"
+              (list "08-colors/colors.rkt")
+              "看到的颜色 = 物体色 × 光色；lamp shader 与双 program")
+        (list "09" "基础光照"
+              (list "09-basic-lighting/basic-lighting.rkt")
+              "ambient/diffuse/specular 三项；法线与 normal matrix")
+        (list "10" "光照贴图"
+              (list "10-lighting-maps/lighting-maps.rkt")
+              "diffuse map 与 specular map：贴图也是开关")
+        (list "11" "光的种类"
+              (list "11-light-casters/directional.rkt"
+                    "11-light-casters/point.rkt"
+                    "11-light-casters/spot.rkt")
+              "directional/point/spot 三种光源与距离衰减")
+        (list "12" "多光源"
+              (list "12-multiple-lights/multiple-lights.rkt")
+              "struct 数组与 for 循环累加；成本随灯数线性")
+        (list "13" "3D 文字"
+              (list "13-text-3d/text-3d.rkt")
+              "文字 → 纹理 → billboard quad；raylib 的 font atlas 思路")
+        (list "14" "模型加载"
+              (list "14-model-loading/model-loading.rkt")
+              "OBJ → 顶点/索引 → VBO/EBO；法线、UV、材质与 glTF/骨骼拓展")
+        (list "15" "精灵图与 HD 3D 场景"
+              (list "15-sprite-atlas/sprite-atlas.rkt")
+              "4×4 精灵图、图集 UV、billboard、加法混合；1280×720 HD 场景")))
+
+(define reviews
+  (list (list "R1" "API 与数据流"
+              (list "review/01-api-flow/api-review.rkt")
+              "传数据 / 设状态 / 启动计算；API 本身不做矩阵和光照")
+        (list "R2" "矩阵与计算位置"
+              (list "review/02-matrices/matrix-review.rkt")
+              "CPU 算 vs GPU 顶点着色器算；同一公式、不同数据流")
+        (list "R3" "光照：CPU 还是 GPU"
+              (list "review/03-lighting/lighting-review.rkt")
+              "逐顶点 / 逐片元 / 离线烘焙；三种计算位置")
+        (list "R4" "用 CPU 走一遍管线"
+              (list "review/04-cpu-renderer/cpu-raster.rkt")
+              "整条管线：CPU 光栅化 + 深度测试 + 片元着色；画出 14 课的茶壶")))
+
+(define (print-lesson num title files desc)
+  (printf "  ~a  ~a\n" num title)
+  (for ([f files])
+    (printf "      代码  ~a\n" f))
+  (printf "      教程  ~a/index.html\n"
+          (regexp-replace #rx"/[^/]*$" (car files) ""))
+  (printf "      ~a\n\n" desc))
+
+(printf "study-opengl —— 用 Racket 学 OpenGL（节奏跟 learnopengl）\n\n")
+(for ([row course])
+  (apply print-lesson row))
+
+(printf "复习章节（读完对应阶段后做）：\n\n")
+(for ([row reviews])
+  (apply print-lesson row))
+
+(printf "课程首页：index.html\n")
+(printf "下一课：racket 01-window/window.rkt\n")</code></pre>
+      </div>
+
+      <h2 id="s0-summary">小结</h2>
+
+      <table class="spec">
+        <thead>
+          <tr>
+            <th>概念</th>
+            <th>一句话</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>CPU 与 GPU</td>
+            <td>CPU 串行、负责判断和调度，决定画什么；GPU 用成千上万个小核心并行算每个顶点和像素</td>
+          </tr>
+          <tr>
+            <td>规范与实现</td>
+            <td>OpenGL 是一份文档，规定函数名和行为；显卡驱动里的那份实现才是真正干活的代码</td>
+          </tr>
+          <tr>
+            <td>状态机</td>
+            <td>先设状态再发命令，命令作用在「当前状态」上，所以到处是「先 bind 再操作」</td>
+          </tr>
+          <tr>
+            <td>对象与 id</td>
+            <td>GPU 上的资源叫对象，CPU 侧只有它的整数 id；数据在显存里，不在 id 里</td>
+          </tr>
+          <tr>
+            <td>管线主线</td>
+            <td>顶点数据 → [顶点着色器] → 图元装配 → 光栅化 → [片元着色器] → 屏幕</td>
+          </tr>
+          <tr>
+            <td>core profile</td>
+            <td>只用现代可编程管线；<code>(send cfg set-legacy? #f)</code> 和 <code>(version 330 core)</code> 是同一件事的两端</td>
+          </tr>
+        </tbody>
+      </table>
+
+    </main>
+
+    <nav class="toc">
+      <b>本节目录</b>
+      <ol>
+        <li><a href="#s0-1">0.1 CPU 与 GPU 的分工</a></li>
+        <li><a href="#s0-2">0.2 OpenGL 是规范，不是库</a></li>
+        <li><a href="#s0-3">0.3 状态机：先设状态，再发命令</a></li>
+        <li><a href="#s0-4">0.4 对象与 id</a></li>
+        <li><a href="#s0-5">0.5 渲染管线主线</a></li>
+        <li><a href="#s0-6">0.6 core profile 与 version 330 core</a></li>
+        <li><a href="#s0-7">0.7 计算放在哪：GPU 不是唯一选择</a></li>
+        <li><a href="#s0-8">0.8 GPU 硬件与数据模型（加深）</a></li>
+        <li><a href="#s0-8-1">0.8.1 GPU 不是“很多 CPU 核”</a></li>
+        <li><a href="#s0-8-2">0.8.2 统一着色器核心与 SIMT</a></li>
+        <li><a href="#s0-8-3">0.8.3 固定功能单元</a></li>
+        <li><a href="#s0-8-4">0.8.4 内存层次与带宽</a></li>
+        <li><a href="#s0-8-5">0.8.5 OpenGL 数据模型</a></li>
+        <li><a href="#s0-8-6">0.8.6 每个常用 GL 调用在 GPU 上做什么</a></li>
+        <li><a href="#s0-8-7">0.8.7 一次 draw 的完整生命周期</a></li>
+        <li><a href="#s0-8-8">0.8.8 对写代码的意义</a></li>
+        <li><a href="#s0-code">完整代码</a></li>
+        <li><a href="#s0-summary">小结</a></li>
+      </ol>
+    </nav>
+  </div>
+
+  <nav class="pager">
+    <a class="next" href="../01-window/index.html">01 开一扇窗口 →</a>
+  </nav>
+
+  <footer class="site-footer">
+    <p>本教程参照 learnopengl.com 的章节节奏，代码用 racket-shader 写。纯静态站，源码可在浏览器里直接查看。</p>
+  </footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>复习 02 · 矩阵与计算位置 — study-opengl</title>
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/highlight.js" defer></script>
+</head>
+<body>
+<div class="page">
+
+  <header class="site-header">
+    <a class="site-title" href="../../index.html">study-opengl</a>
+    <nav class="crumbs"><a href="../../index.html">课程</a> / <span>复习 02 · 矩阵与计算位置</span></nav>
+  </header>
+
+  <div class="layout">
+    <main class="content">
+
+      <h1>复习 02 · 矩阵与计算位置</h1>
+
+      <p class="goal">目标：把 05–07 的矩阵链路在 CPU 上亲手算一遍，再对照 GPU 顶点着色器里的同一行公式。你会看到：数学完全一样，区别只是「在哪里算、数据怎么流」。</p>
+
+      <div class="run"><span class="prompt">$</span> racket review/02-matrices/matrix-review.rkt</div>
+
+      <h2 id="r2-1">R2.1 公式</h2>
+
+      <p>GPU 顶点着色器每个顶点执行：</p>
+
+      <p><code>clip = u_proj · u_view · u_model · vec4(pos, 1.0)</code></p>
+      <p><code>ndc = clip.xyz / clip.w</code></p>
+
+      <p>CPU 版没有魔法，就是同样的矩阵乘法：</p>
+
+      <div class="code">
+        <div class="code-title">review/02-matrices/matrix-review.rkt（摘录）<a class="srclink" href="../../code.html?f=review/02-matrices/matrix-review.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">(define model (m-translate (vec-3 0.5 0.0 -1.0)))
+(define view  (m-look-at (vec-3 0.0 0.0 5.0) (vec-3 0.0 0.0 0.0) (vec-3 0.0 1.0 0.0)))
+(define proj  (m-perspective (degrees->radians 45.0) (/ 4.0 3.0) 0.1 100.0))
+
+(define mvp  (mat4-mul proj (mat4-mul view model)))
+(define clip (mat4-mul-vec mvp (vec-4 0.5 0.0 0.0 1.0)))
+(define ndc  (vec-3 (/ (vx clip) (vw clip))
+                    (/ (vy clip) (vw clip))
+                    (/ (vz clip) (vw clip))))</code></pre>
+      </div>
+
+      <h2 id="r2-2">R2.2 CPU 还是 GPU</h2>
+
+      <table class="spec">
+        <thead><tr><th></th><th>CPU 算</th><th>GPU 算（本教程）</th></tr></thead>
+        <tbody>
+          <tr><td>传什么</td><td>传算好的顶点（世界/NDC）</td><td>传原始顶点 + model/view/proj</td></tr>
+          <tr><td>每帧成本</td><td>CPU 遍历所有顶点 + 重新上传 VBO</td><td>CPU 只更新几个矩阵 uniform</td></tr>
+          <tr><td>适合</td><td>顶点少、变化少、需要 CPU 读结果</td><td>顶点多、相机/物体每帧变</td></tr>
+          <tr><td>优势</td><td>简单、可调试、无需 GPU 回读</td><td>并行、无中间结果上传</td></tr>
+        </tbody>
+      </table>
+
+      <p>所以「把计算放到 GPU」不是唯一选择。它是一个<b>数据流决策</b>：计算本身（矩阵乘法）不变，变的是计算发生的位置和中间结果的传输成本。</p>
+
+      <div class="note key">
+        <p><b>记法</b><code>model</code> 把局部坐标搬到世界，<code>view</code> 把世界搬到相机，<code>proj</code> 把相机视锥压成裁剪空间。矩阵从右往左作用在顶点上：<code>proj · view · model · p</code>。</p>
+      </div>
+
+
+    </main>
+
+    <nav class="toc">
+      <b>本节目录</b>
+      <ol>
+        <li><a href="#r2-1">R2.1 公式</a></li>
+        <li><a href="#r2-2">R2.2 CPU 还是 GPU</a></li>
+      </ol>
+    </nav>
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="../01-api-flow/index.html">← 复习 01 API</a>
+    <a class="next" href="../03-lighting/index.html">复习 03 光照 →</a>
+  </nav>
+
+  <footer class="site-footer">
+    <p>本教程参照 learnopengl.com 的章节节奏，代码用 racket-shader 写。纯静态站，源码可在浏览器里直接查看。</p>
+  </footer>
+
+</div>
+</body>
+</html>

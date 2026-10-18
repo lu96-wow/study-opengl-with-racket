@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>14 · 模型加载 — study-opengl</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/highlight.js" defer></script>
+</head>
+<body>
+<div class="page">
+
+  <header class="site-header">
+    <a class="site-title" href="../index.html">study-opengl</a>
+    <nav class="crumbs"><a href="../index.html">课程</a> / <span>14 · 模型加载</span></nav>
+  </header>
+
+  <div class="layout">
+    <main class="content">
+
+      <h1>模型加载</h1>
+
+      <p class="goal">本节目标：不再手写顶点数据，而是从 OBJ 文件读一个真实模型。我们加载经典的 Utah Teapot（1202 个顶点 / 2256 个三角形，带法线、没有 UV），用纯材质色 + 09 课的 Phong 光照画出来。跑起来应该看到一个旋转的茶壶，能看出壶身、壶嘴、把手和盖子的明暗。</p>
+
+      <div class="run"><span class="prompt">$</span> racket 14-model-loading/model-loading.rkt</div>
+
+            <div class="note key">
+        <p><b>计算位置</b>OBJ 解析、顶点/索引组装在 CPU；顶点变换、法线变换、光照在 GPU。模型加载本身不是 GPU 计算，它是在准备 GPU 要用的数据。</p>
+      </div>
+
+<h2 id="s14-1">14.1 OBJ 文件长什么样</h2>
+
+      <p>Wavefront OBJ 是纯文本格式，最常用的四类记录是：</p>
+
+      <ul>
+        <li><code>v x y z</code>：顶点位置，索引从 1 开始</li>
+        <li><code>vt u v</code>：纹理坐标</li>
+        <li><code>vn x y z</code>：法线</li>
+        <li><code>f v/vt/vn ...</code>：面，用“位置/UV/法线”的索引引用前面三张表</li>
+      </ul>
+
+      <p>本课用的模型是 <a class="filelink" href="../assets/models/teapot.obj">assets/models/teapot.obj</a>（Utah Teapot，经典测试模型；文件头保留了来源和 MIT 许可说明）。开头是：</p>
+
+      <pre><code># Utah Teapot (classic test model, original by Martin Newell)
+# Source file: https://github.com/McNopper/OpenGL/blob/master/Binaries/teapot.obj
+# Repository license: MIT
+v 0.605903 0.005903 0.000000
+v 0.000000 0.000000 0.000000
+v 0.584584 0.005902 -0.162696
+v 0.524218 0.005902 -0.307888
+v 0.430191 0.005901 -0.430191
+v 0.307888 0.005901 -0.524218
+...
+f 1//1 2//2 3//3
+f 3//3 2//2 4//4
+...</code></pre>
+
+      <p>一个面可以是三角形，也可以是多边形。OBJ 还允许一个顶点在不同面上有不同的 UV/法线，所以“同一个位置”可能出现多次——这正是硬边和 UV 接缝的来源。</p>
+
+      <h2 id="s14-2">14.2 CPU 侧：解析 OBJ</h2>
+
+      <p><a class="filelink" href="../code.html?f=lib/obj.rkt">lib/obj.rkt</a> 是一个极简读取器，只做模型加载课需要的事：</p>
+
+      <ol>
+        <li>按行读 <code>v</code> / <code>vt</code> / <code>vn</code> / <code>f</code>，忽略注释和材质指令。</li>
+        <li>把 1-based、负数索引统一成 0-based。</li>
+        <li>用 <code>(v-index, vt-index, vn-index)</code> 作为去重键，生成唯一的 <code>obj-vertex</code>。</li>
+        <li>多边形用扇形三角化：<code>(0,1,2) (0,2,3) ...</code>。</li>
+        <li>返回 <code>obj-mesh</code>：顶点表 + 三角形索引表。</li>
+      </ol>
+
+      <pre><code class="lang-racket">(define mesh (read-obj "assets/models/teapot.obj"))
+
+(obj-mesh-vertex-count mesh)   ; =&gt; 1202
+(obj-mesh-index-count mesh)    ; =&gt; 6768（2256 个三角形 × 3）</code></pre>
+
+      <p>这个茶壶文件只有 <code>v</code> 和 <code>vn</code>，没有 <code>vt</code>。loader 对缺失的 UV 给默认值；本课也就不用纹理，直接用材质色 + 法线光照。想验证 UV 加载，可以换一个带 <code>vt</code> 的模型。</p>
+
+      <p>注意：loader 不负责“计算缺失法线”或“合并相同顶点”。它只忠实解析文件；优化与容错是拓展方向。</p>
+
+      <h2 id="s14-3">14.3 从 obj-vertex 到 GPU 顶点</h2>
+
+      <p>渲染用的顶点布局是：</p>
+
+      <pre><code class="lang-racket">(glsl-struct model-vertex (vec-3 pos) (vec-3 normal))</code></pre>
+
+      <p>把 <code>obj-vertex</code> 逐个转成 <code>model-vertex</code>，铺平成一条 f32vector，再上传 VBO；索引表上传 EBO：</p>
+
+      <pre><code class="lang-racket">(define model-data
+  (apply concat-vecs
+         (for/list ([v (in-vector (obj-mesh-vertices mesh))])
+           (model-vertex->f32vector
+            (model-vertex (obj-vertex-pos v)
+                          (obj-vertex-normal v))))))
+
+(define model-indices
+  (apply u16-array (vector->list (obj-mesh-indices mesh))))</code></pre>
+
+      <p>属性布局仍然交给 <code>glsl-vertex-layout!</code>：shader 的 <code>in</code> 名和 <code>model-vertex</code> 字段名都是 <code>pos</code> / <code>normal</code>，编译期自动对齐 slot、stride、offset。</p>
+
+      <p>绘制时用 09 课已经熟悉的矩阵链路：</p>
+
+      <pre><code class="lang-racket">(define model-m
+  (mat4-mul (m-scale (vec-3 0.8 0.8 0.8))
+            (m-rotate-y t)))
+
+(set-model-u-model! model-m)
+(set-model-u-view! view)
+(set-model-u-proj! proj)
+(set-model-u-normal-matrix! (m-normal-matrix model-m))</code></pre>
+
+      <h2 id="s14-4">14.4 本课的着色器</h2>
+
+      <p>顶点着色器就是 09 课的标准三件套：位置 → 世界 → 观察 → 裁剪，同时把法线、世界位置、UV 传给片元。片元做一次简单的 Phong：</p>
+
+      <pre><code class="lang-racket">(float ambient 0.15)
+(float diff (max (dot norm light-dir) 0.0))
+(float spec (* (pow (max (dot view-dir reflect-dir) 0.0) 32.0) 0.4))
+(vec-3 lit (* (+ ambient diff spec) u-light-color))
+(set! frag-color (vec-4 (* lit u-object-color) 1.0))</code></pre>
+
+      <p>茶壶没有 UV，所以本课不采样纹理；材质色用 <code>u-object-color</code> 给。法线仍然参与 diffuse/specular，壶身、壶嘴、把手和盖子的朝向不同，明暗就不同。</p>
+
+      <h2 id="s14-code">完整代码</h2>
+
+      <p><a class="filelink" href="../code.html?f=14-model-loading/model-loading.rkt">14-model-loading/model-loading.rkt</a>，本课全部代码（直接 <code>racket</code> 跑）：</p>
+
+      <div class="code">
+        <div class="code-title">14-model-loading/model-loading.rkt<a class="srclink" href="../code.html?f=14-model-loading/model-loading.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">#lang glsl-opengl
+;; ============================================================
+;; 14 · 模型加载：从 OBJ 文件到 GPU
+;; 运行：racket 14-model-loading/model-loading.rkt
+;; 上一课：13-text-3d/text-3d.rkt
+;; ============================================================
+;; 目标：不再手写顶点数据，而是从 assets/models/teapot.obj 读一个模型。
+;;
+;; 这是经典的 Utah Teapot：1202 个顶点 / 2256 个三角形，带法线，
+;; 但没有 UV。用它正好说明：模型加载不只是“读位置”，还要处理法线，
+;; 而 UV / 材质是另一层数据，缺了也能先用纯材质色 + 光照渲染。
+;;
+;; OBJ 文件里常见三张表：
+;;   v  顶点位置
+;;   vt UV
+;;   vn 法线
+;; 面用 f 引用它们：f v/vt/vn ...
+;;
+;; CPU 侧要做的事：
+;;   1. 解析 OBJ（lib/obj.rkt）
+;;   2. 把 obj-vertex 转成渲染用的交错顶点（model-vertex）
+;;   3. 上传 VBO + EBO
+;;   4. 用 model / view / proj / normal-matrix 画出来
+;;
+;; 想加载别的 OBJ：把路径换成自己的文件即可；复杂模型还需要材质、
+;; 多 group、索引去重优化等，见页面最后的“拓展方向”。
+
+(require racket/class
+         racket/gui                     ; timer%
+         racket/math                    ; degrees-&gt;radians
+         "../lib/window.rkt"
+         "../lib/matrix.rkt"
+         "../lib/obj.rkt")
+
+;; ------------------------------------------------------------
+;; 一、读 OBJ
+;; ------------------------------------------------------------
+(define mesh (read-obj (build-path (current-directory)
+                                   "assets/models/teapot.obj")))
+
+;; 渲染用顶点布局：位置 + 法线。
+;; 字段名必须和 shader 的 in 名一致，glsl-vertex-layout! 才能自动对齐。
+;; （loader 仍然支持 UV；这个 teapot 文件没有 vt，所以这里不需要。）
+(glsl-struct model-vertex (vec-3 pos) (vec-3 normal))
+
+(define model-data
+  (apply concat-vecs
+         (for/list ([v (in-vector (obj-mesh-vertices mesh))])
+           (model-vertex-&gt;f32vector
+            (model-vertex (obj-vertex-pos v)
+                          (obj-vertex-normal v))))))
+
+(define model-indices
+  (apply u16-array (vector-&gt;list (obj-mesh-indices mesh))))
+
+(define model-index-count (obj-mesh-index-count mesh))
+
+;; ------------------------------------------------------------
+;; 二、着色器：纯材质色 + 简单 Phong
+;; ------------------------------------------------------------
+(glsl-shader model-vert
+  (version 330 core)
+  (layout (location 0) in vec-3 pos)
+  (layout (location 1) in vec-3 normal)
+  (uniform mat-4 u-model)
+  (uniform mat-4 u-view)
+  (uniform mat-4 u-proj)
+  (uniform mat-3 u-normal-matrix)
+  (out vec-3 v-normal)
+  (out vec-3 v-frag-pos)
+  (define (main) void
+    (set! v-normal (* u-normal-matrix normal))
+    (set! v-frag-pos (vec-3 (* u-model (vec-4 pos 1.0))))
+    (set! gl-position (* u-proj (* u-view (* u-model (vec-4 pos 1.0)))))))
+
+(glsl-shader model-frag
+  (version 330 core)
+  (in vec-3 v-normal)
+  (in vec-3 v-frag-pos)
+  (uniform vec-3 u-object-color)
+  (uniform vec-3 u-light-pos)
+  (uniform vec-3 u-light-color)
+  (uniform vec-3 u-view-pos)
+  (out vec-4 frag-color)
+  (define (main) void
+    (vec-3 norm (normalize v-normal))
+    (vec-3 light-dir (normalize (- u-light-pos v-frag-pos)))
+    (vec-3 view-dir (normalize (- u-view-pos v-frag-pos)))
+    (vec-3 reflect-dir (reflect (- light-dir) norm))
+
+    (float ambient 0.15)
+    (float diff (max (dot norm light-dir) 0.0))
+    (float spec (* (pow (max (dot view-dir reflect-dir) 0.0) 32.0) 0.4))
+    (vec-3 lit (* (+ ambient diff spec) u-light-color))
+    (set! frag-color (vec-4 (* lit u-object-color) 1.0))))
+
+;; ------------------------------------------------------------
+;; 三、GL 对象
+;; ------------------------------------------------------------
+(define model-program #f)
+(define vao #f)
+
+(glsl-uniform-setter! model-program model-vert model-frag #:prefix "model-")
+
+(define (init)
+  (set! model-program (build-program (gl-vertex-shader model-vert)
+                                     (gl-fragment-shader model-frag)))
+
+  (gl-enable gl-depth-test)
+
+  ;; ---- 模型 VAO / VBO / EBO ----
+  (set! vao (vertex-array-new))
+  (gl-bind-vertex-array vao)
+
+  (define vbo (buffer-new))
+  (gl-bind-buffer gl-array-buffer vbo)
+  (buffer-upload gl-array-buffer model-data gl-static-draw)
+  ;; shader 的 in 名 = model-vertex 字段名：pos / normal / uv
+  (glsl-vertex-layout! model-vert model-vertex)
+
+  (define ebo (buffer-new))
+  (gl-bind-buffer gl-element-array-buffer ebo)
+  (buffer-upload gl-element-array-buffer model-indices gl-static-draw)
+
+  (gl-bind-vertex-array 0))
+
+;; ------------------------------------------------------------
+;; 五、窗口 / 绘制
+;; ------------------------------------------------------------
+(define win-w 800)
+(define win-h 600)
+(define aspect (/ win-w win-h))
+
+(define (draw)
+  (gl-clear-color 0.08 0.10 0.16 1.0)
+  (gl-clear (bitwise-ior gl-color-buffer-bit gl-depth-buffer-bit))
+
+  (define t (/ (current-inexact-monotonic-milliseconds) 1000.0))
+  (define eye (vec-3 4.5 3.0 6.5))
+  (define view (m-look-at eye (vec-3 0.0 1.2 0.0) (vec-3 0.0 1.0 0.0)))
+  (define proj (m-perspective (degrees-&gt;radians 45.0) aspect 0.1 100.0))
+
+  ;; 模型自己绕 y 轴转，方便看背面和侧面
+  (define model-m
+    (mat4-mul (m-scale (vec-3 0.8 0.8 0.8))
+              (m-rotate-y t)))
+
+  (program-use model-program)
+  (gl-bind-vertex-array vao)
+
+  (set-model-u-model! model-m)
+  (set-model-u-view! view)
+  (set-model-u-proj! proj)
+  (set-model-u-normal-matrix! (m-normal-matrix model-m))
+  (set-model-u-object-color! (vec-3 0.82 0.55 0.35))
+  (set-model-u-light-pos! (vec-3 4.0 5.0 4.0))
+  (set-model-u-light-color! (vec-3 1.0 1.0 1.0))
+  (set-model-u-view-pos! eye)
+
+  (gl-draw-elements gl-triangles model-index-count gl-unsigned-short 0)
+  (gl-bind-vertex-array 0))
+
+(define-values (frame canvas)
+  (make-window #:title "14 模型加载"
+               #:width win-w
+               #:height win-h
+               #:init init
+               #:draw draw
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+(send frame show #t)
+
+;; 模型在转，需要定时器不断请求重绘
+(define timer
+  (new timer% [interval 16]
+              [notify-callback (lambda () (send canvas refresh))]))
+</code></pre>
+      </div>
+
+
+      <h2 id="s14-exercise">14.5 试试看</h2>
+
+      <ol class="exercise">
+        <li><b>非等比缩放</b>：把 <code>m-scale</code> 改成 <code>(vec-3 1.6 0.7 1.0)</code>，观察明暗和高光是否被拉歪；再把 <code>set-model-u-normal-matrix!</code> 的参数换成“只取 model 左上 3×3、不做逆转置”的 naive 版本（09 课「试试看」第 ④ 条有完整写法），对比法线错误时画面怎么变。</li>
+        <li><b>换材质色和灯位</b>：改 <code>u-object-color</code>、<code>u-light-pos</code>、<code>eye</code>，确认颜色乘法、点光方向和相机位置各自影响什么。</li>
+        <li><b>画两个茶壶</b>：在 <code>draw</code> 里把 <code>set-model-u-model!</code> + <code>set-model-u-normal-matrix!</code> + <code>gl-draw-elements</code> 这段再写一遍，第二次用 <code>(mat4-mul (m-translate (vec-3 2.5 0 0)) model-m)</code>。每个物体都要重新传 model 和 normal matrix，但 VBO/EBO 可以共用。</li>
+        <li><b>换图元</b>：把 <code>gl-draw-elements gl-triangles</code> 换成 <code>gl-lines</code> 或 <code>gl-points</code>。索引表不变，看到的是三角形边/顶点而不是实心面，正好检查网格拓扑。</li>
+        <li><b>没有法线的模型</b>：复制一份 <code>teapot.obj</code>，删掉所有 <code>vn</code> 行（或找一个不带法线的 OBJ）再加载。loader 会给默认零法线，光照会大面积变黑；这能说明为什么本课要把法线一起上传。</li>
+      </ol>
+
+      <h2 id="s14-next">14.6 拓展方向</h2>
+
+      <ol class="exercise">
+        <li><b>材质 / 多 group</b>：OBJ 的 <code>usemtl</code> / <code>mtllib</code> 指向 MTL 文件（漫反射、镜面、透明度等）。要做完整模型，需要按 group 拆分 draw call，并为每个材质绑定不同纹理/参数。</li>
+        <li><b>更大 / 更复杂的模型</b>：当前 loader 只处理 <code>v/vt/vn/f</code>。真实模型还常有四边面、N 边形、多文件引用、纹理路径、变换层级等，需要更完整的解析器。</li>
+        <li><b>法线计算</b>：如果 OBJ 没有 <code>vn</code>，可以按面法线或平滑法线（顶点邻接平均）计算。当前 loader 缺省给 <code>(0,0,0)</code>。</li>
+        <li><b>索引优化</b>：当前去重键包含 <code>vt/vn</code>，UV 接缝会拆点。进一步可以按 GPU 缓存局部性重排索引（meshoptimizer 之类），提升顶点缓存命中率。</li>
+        <li><b>二进制 / glTF</b>：OBJ 是教学友好的文本格式；生产环境更常用 glTF（二进制、内嵌材质/动画/骨骼）。下一步可以看 glTF 2.0 的 accessor / bufferView / 材质模型。</li>
+        <li><b>法线贴图 / 切线空间</b>：模型加载常和 normal map 一起出现。需要为每个顶点准备 tangent / bitangent，或者在 shader 里用屏幕导数构造 TBN。</li>
+        <li><b>骨骼动画</b>：OBJ 不支持骨骼；要做角色动画需要 glTF/FBX 的 skin / joint / weight 数据。</li>
+        <li><b>场景图</b>：一个模型文件可能包含多个 node，每个 node 有自己的 transform。当前只画一个 mesh；真实场景需要递归遍历 node 树。</li>
+        <li><b>资源缓存</b>：同一个模型被多个物体使用时，应该共享 VBO/EBO/纹理，而不是每个实例都上传一遍。</li>
+      </ol>
+
+      <div class="note key">
+        <p><b>结论</b>模型加载可以拆成三层：<b>文件解析</b>（OBJ → 顶点/索引）、<b>GPU 上传</b>（VBO/EBO/纹理）、<b>场景变换</b>（model/view/proj/normal matrix）。本课把三层都走了一遍；后续扩展通常发生在第一层（格式/材质/动画）和第三层（场景图/实例化）。</p>
+      </div>
+
+      <div class="note">
+        <p><b>想看清 draw 背后发生了什么</b><a class="filelink" href="../review/04-cpu-renderer/index.html">复习 04 · 用 CPU 走一遍渲染管线</a> 用 Racket 把同一只茶壶画了一遍：顶点变换、光栅化、深度测试、透视校正、片元着色，每一步都写出来，并给出各自的执行次数和耗时。</p>
+      </div>
+
+    </main>
+
+    <nav class="toc">
+      <b>本节目录</b>
+      <ol>
+        <li><a href="#s14-1">14.1 OBJ 文件长什么样</a></li>
+        <li><a href="#s14-2">14.2 CPU 侧：解析 OBJ</a></li>
+        <li><a href="#s14-3">14.3 从 obj-vertex 到 GPU 顶点</a></li>
+        <li><a href="#s14-4">14.4 本课的着色器</a></li>
+        <li><a href="#s14-code">完整代码</a></li>
+        <li><a href="#s14-exercise">14.5 试试看</a></li>
+        <li><a href="#s14-next">14.6 拓展方向</a></li>
+      </ol>
+    </nav>
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="../13-text-3d/index.html">← 13 3D 文字</a>
+    <a class="next" href="../15-sprite-atlas/index.html">15 精灵图与 HD 3D 场景 →</a>
+  </nav>
+
+  <footer class="site-footer">
+    <p>本教程参照 learnopengl.com 的章节节奏，代码用 racket-shader 写。纯静态站，源码可在浏览器里直接查看。</p>
+  </footer>
+
+</div>
+</body>
+</html>

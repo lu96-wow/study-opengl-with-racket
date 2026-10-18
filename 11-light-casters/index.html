@@ -1,0 +1,1143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>11 · 光从哪来 — study-opengl</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/highlight.js" defer></script>
+</head>
+<body>
+<div class="page">
+
+  <header class="site-header">
+    <a class="site-title" href="../index.html">study-opengl</a>
+    <nav class="crumbs"><a href="../index.html">课程</a> / <span>11 · 光从哪来</span></nav>
+  </header>
+
+  <div class="layout">
+    <main class="content">
+
+      <h1>光的种类</h1>
+
+      <p class="goal">本节目标：光照那三项（ambient / diffuse / specular）从 09 课起没变过，这一节换的是「光从哪来」——同一套公式配三种光源：<b>方向光</b>（只有方向，没有位置）、<b>点光</b>（有位置，随距离衰减）、<b>聚光</b>（点光再加一个锥）。三个源码文件各跑一遍，每份只比上一份多几行，对着 diff 读就能看清每一种光是丢掉了什么、又加回了什么。跑起来应该看到三件事：方向光下四个立方体同朝向的面一样亮；点光下同样的四个立方体亮成四个档次；聚光下只有光锥里的立方体被照亮，锥外几乎全黑，锥边是软的。</p>
+
+      <div class="run"><span class="prompt">$</span> racket 11-light-casters/directional.rkt</div>
+      <div class="run"><span class="prompt">$</span> racket 11-light-casters/point.rkt</div>
+      <div class="run"><span class="prompt">$</span> racket 11-light-casters/spot.rkt</div>
+
+            <div class="note key">
+        <p><b>计算位置</b>方向光 / 点光 / 聚光的公式都在片元着色器里算；CPU 只上传光的位置、方向、颜色、衰减系数。CPU 也可以做逐顶点或预烘焙，但动态灯和逐像素高光更适合 GPU（见 R3）。</p>
+      </div>
+
+<h2 id="s11-1">11.1 方向光：只有方向，没有位置</h2>
+
+      <p>太阳离我们足够远，远到什么程度？远到「它在地球上的哪个点上方」这件事不再有意义——射到地面上的光线已经互相平行。光照公式里的 <code>light-dir</code>（从这一点指向光源的方向）在这种情况下整个场景共用一个值，不必再逐片元去减一个位置。</p>
+
+      <p>所以方向光这一份把 09 / 10 课的 <code>u-light-pos</code> 换成了 <code>u-light-dir</code>。注意名字里的 <code>Dir</code> 存的是光<b>往哪走</b>（传播方向），而公式要的是「从片元指向光源」，取反一下即可：</p>
+
+      <div class="code">
+        <div class="code-title">11-light-casters/directional.rkt：片元里唯一的改动——方向取反，不再碰 v-frag-pos<a class="srclink" href="../code.html?f=11-light-casters/directional.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">        (define (main) void
+          (vec-3 norm (normalize v-normal))
+          (vec-3 light-dir (normalize (- u-light-dir)))
+          (float ambient 0.1)
+          (float diff (max (dot norm light-dir) 0.0))
+          (vec-3 reflect-dir (reflect (- light-dir) norm))
+          (vec-3 view-dir (normalize (- u-view-pos v-frag-pos)))
+          (float spec (* (pow (max (dot view-dir reflect-dir) 0.0) 32.0) 0.5))
+          ;; 这里没有 attenuation：光走到哪儿都是同一个强度，距离不进公式。
+          (set! frag-color (vec-4 (* (+ ambient diff spec) u-light-color u-object-color) 1.0)))))</code></pre>
+      </div>
+
+      <p>跑起来画面里是四个立方体排成一列，一个比一个远。它们都只做了平移、没有旋转，所以「朝向同一个方向的面」在四处都存在——你会发现四个顶面亮得<b>一模一样</b>，前面和侧面也一样。距离这件事根本没进公式（<code>diff</code> 拿的是常量 <code>light-dir</code>，不是逐片元的减法结果），亮度只由「面朝哪」决定。</p>
+
+      <div class="note key">
+        <p><b>关键点</b>方向光的「位置」不是省略了，而是推到了无穷远：位置一去，距离也就没有了分母，衰减无从谈起。11.2 的点光会把位置和衰减一起加回来，而两张画面用的是<b>同一张位置表、同一台相机</b>——对照着看，方向光丢掉的东西一目了然。</p>
+      </div>
+
+      <h2 id="s11-2">11.2 点光与衰减：位置回来了，亮度开始随距离掉</h2>
+
+      <p>灯泡不是太阳：它就挂在房间里的某一点，光从这一点向四周辐射。于是 <code>u-light-pos</code> 回来了，<code>light-dir</code> 得逐片元算——每个像素看到的「灯的方向」都不一样。</p>
+
+      <p>接下来是新的东西：亮度会随距离下降。可以这么想：灯每秒送出固定的能量，这些能量摊在以灯为心、半径 <code>d</code> 的球面上，球面积是 <code>4πd²</code>——距离翻一倍，同样多的能量摊到四倍大的面积上，单位面积只剩四分之一。教科书式的写法是把这件事拆成三项：</p>
+
+      <p>先把点光的方向和距离写清楚：</p>
+
+      <p><code>l = normalize(lightPos - fragPos)</code>　（从片元指向灯）</p>
+      <p><code>d = length(lightPos - fragPos)</code></p>
+
+      <p>如果只按物理上的「能量摊在球面上」，强度应该按 <code>1 / d²</code> 掉：距离翻倍，球面积变四倍，单位面积只剩四分之一。但纯 <code>1/d²</code> 在 <code>d → 0</code> 时会爆炸，而且艺术家通常想手动控制「这盏灯照多远、近处多亮」。所以实时渲染常用一个三项分母来近似：</p>
+
+      <p><code>attenuation = 1 / (kc + kl·d + kq·d²)</code></p>
+
+      <p>三个系数各管一段距离：</p>
+
+      <ul>
+        <li><code>kc</code>（常数项）：<code>d = 0</code> 时只剩它，所以它是贴灯时的保底，也是防止除零的闸；</li>
+        <li><code>kl·d</code>（线性项）：控制中距离的衰减速度，把近段和远段接得平缓；</li>
+        <li><code>kq·d²</code>（二次项）：远距离时占主导，接近物理的 <code>1/d²</code> 行为。</li>
+      </ul>
+
+      <p>它不是物理定律，而是一个可调曲线：调大 <code>kc</code> 整体变暗但远段更均匀，调大 <code>kq</code> 光只能走几步。下面这档参数是本课用的。</p>
+
+      <p>本课这一档里 <code>kc = 1.0</code>：<code>d</code> 很小时分母几乎只剩它，所以它是<b>贴灯时的保底</b>——顺便也是防止近距离除零爆表的那道闸。接着 <code>kq·d²</code>（<code>0.032d²</code>）随着 <code>d</code> 平方增长，到 <code>d ≈ 5.6</code> 就反超了 <code>kc</code>，成为分母里最大的那一项，曲线的右半段因此几乎拉平（见图 11-1）。<code>kl·d</code>（<code>0.09d</code>）是中间那一项：它自己不常是最大的，但把前两段之间接得平缓，少掉它，曲线会在中段陡一下。下面这张表是几档常用的配法，<code>d</code> 一栏写的是「这组系数大致能把光送到多远」——到那一点时衰减都压到了 1% 左右，差别只在用多长的距离做到这件事：</p>
+
+      <table class="spec">
+        <thead>
+          <tr>
+            <th>想覆盖到距离</th>
+            <th><code>kc</code> 常数</th>
+            <th><code>kl</code> 线性</th>
+            <th><code>kq</code> 二次</th>
+            <th>到那一点时的 attenuation</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>7 左右（近）</td>
+            <td>1.0</td>
+            <td>0.7</td>
+            <td>1.8</td>
+            <td><code>1 / (1 + 4.9 + 88.2) ≈ 0.011</code>——二次项已经硬得离谱，光只能走几步</td>
+          </tr>
+          <tr>
+            <td>50 左右（中）</td>
+            <td>1.0</td>
+            <td>0.09</td>
+            <td>0.032</td>
+            <td><code>1 / (1 + 4.5 + 80) ≈ 0.012</code>——<b>本课用的就是这档</b></td>
+          </tr>
+          <tr>
+            <td>325 左右（远）</td>
+            <td>1.0</td>
+            <td>0.014</td>
+            <td>0.0007</td>
+            <td><code>1 / (1 + 4.55 + 73.9) ≈ 0.013</code>——二次项几乎退休，靠常数与线性撑着</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <figure class="figure">
+        <svg viewBox="0 0 720 300" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>衰减曲线：attenuation = 1/(1 + 0.09d + 0.032d²) 从 1 迅速下落，远段趋于平缓；d 小的时候分母由 kc 撑着，超过 5.6 之后 kq·d² 成了最大项</title>
+
+          <line x1="70" y1="240" x2="668" y2="240" stroke="var(--line)" stroke-width="1.5"/>
+          <line x1="70" y1="240" x2="70" y2="34" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="76" y="24" font-size="13" fill="var(--fg)">亮度 attenuation</text>
+          <text x="664" y="228" text-anchor="end" font-size="13" fill="var(--fg)">距离 d</text>
+
+          <text x="62" y="44" text-anchor="end" font-size="12" fill="var(--muted)">1.0</text>
+          <text x="62" y="144" text-anchor="end" font-size="12" fill="var(--muted)">0.5</text>
+          <text x="62" y="244" text-anchor="end" font-size="12" fill="var(--muted)">0</text>
+          <text x="70" y="258" text-anchor="middle" font-size="12" fill="var(--muted)">0</text>
+          <text x="365" y="258" text-anchor="middle" font-size="12" fill="var(--muted)">5</text>
+          <text x="660" y="258" text-anchor="middle" font-size="12" fill="var(--muted)">10</text>
+
+          <line x1="70" y1="40" x2="660" y2="40" stroke="var(--line)" stroke-width="1" stroke-dasharray="4 4"/>
+          <line x1="70" y1="140" x2="660" y2="140" stroke="var(--line)" stroke-width="1" stroke-dasharray="4 4"/>
+
+          <polyline points="70,40 129,61.8 188,87.2 247,111.6 306,133.2 365,151.2 424,165.8 483,177.4 542,187 601,194.6 660,200.8"
+                    fill="none" stroke="var(--accent)" stroke-width="2.5"/>
+
+          <circle cx="158.5" cy="74.4" r="4.5" fill="#d9822b"/>
+          <circle cx="247" cy="111.6" r="4.5" fill="#d9822b"/>
+          <circle cx="365" cy="151.2" r="4.5" fill="#d9822b"/>
+          <circle cx="483" cy="177.4" r="4.5" fill="#d9822b"/>
+          <text x="300" y="62" font-size="12" fill="#d9822b">● 四个立方体到灯的距离：1.5 / 3 / 5 / 7</text>
+
+          <text x="330" y="220" font-size="13" fill="var(--fg)">kl·d 夹在中间：它把前后两段接得平缓</text>
+
+          <line x1="70" y1="272" x2="400" y2="272" stroke="var(--line)" stroke-width="1.5"/>
+          <line x1="70" y1="266" x2="70" y2="278" stroke="var(--line)" stroke-width="1.5"/>
+          <line x1="400" y1="266" x2="400" y2="278" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="235" y="294" text-anchor="middle" font-size="12" fill="var(--accent)">kc 还是分母里最大的那项</text>
+
+          <line x1="400" y1="272" x2="660" y2="272" stroke="var(--line)" stroke-width="1.5"/>
+          <line x1="660" y1="266" x2="660" y2="278" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="530" y="294" text-anchor="middle" font-size="12" fill="var(--accent)">kq 反超，成了最大项</text>
+        </svg>
+        <figcaption class="figcaption">图 11-1 衰减曲线（本课参数 kc = 1.0 / kl = 0.09 / kq = 0.032）：起点由 kc 定，d 超过 5.6 之后 kq·d² 成了分母里的最大项，曲线于是几乎拉平</figcaption>
+      </figure>
+
+      <p>落到代码上，点光只比方向光多两行——算距离、算衰减——再把衰减乘到 diffuse 与 specular 上：</p>
+
+      <div class="code">
+        <div class="code-title">11-light-casters/point.rkt：距离与衰减，以及乘给谁<a class="srclink" href="../code.html?f=11-light-casters/point.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">          (vec-3 light-dir (normalize (- u-light-pos v-frag-pos)))
+          (float distance (length (- u-light-pos v-frag-pos)))
+          ;; 衰减：分母里的三项各管一段距离（见页面上那张曲线与参数表）。
+          ;; d = 0 时分母退化成 kc，所以 kc 是"贴着灯时的保底"——它不该是 0。
+          (float attenuation (/ 1.0 (+ u-kc (* u-kl distance) (* u-kq distance distance))))
+          (float ambient 0.1)
+          ;; diffuse 和 specular 都是"这盏灯送来的光"，所以两处都乘 attenuation；
+          ;; ambient 不乘：环境光是场景里来回弹的那份光，不是这盏灯给的，
+          ;; 乘上去会让远处的背光面越来越黑，与事实不符。
+          (float diff (* (max (dot norm light-dir) 0.0) attenuation))</code></pre>
+      </div>
+
+      <p>环境光为什么不乘衰减：<code>ambient</code> 那块 <code>0.1</code> 本来就不是「这盏灯送来的光」，而是用来代替场景里光线弹来弹去的那份底光的。它乘上衰减，等于宣称「离灯远的地方连反弹回来的光都少了」——真实的房间里，灯照不到的角落也还亮着一点。所以这一项原样保留，只有 diffuse 与 specular 跟着距离缩水。</p>
+
+      <p>场景里四个立方体就排在灯的正前方，中心离灯 1.5 / 3 / 5 / 7。跑起来能看到近的那个明显亮、远的那个发暗——把这几行里的 <code>u-kq</code> 改小、或把 <code>u-kc</code> 改成 0，亮度的梯度会跟着变（见「试试看」）。</p>
+
+      <h2 id="s11-3">11.3 聚光：点光加一个锥</h2>
+
+      <p>点光四面八方一样亮，手电筒、路灯、舞台追光却不是：光被罩住，只朝一个锥里射。聚光在点光上只多一个判据——这个片元在不在锥里。</p>
+
+      <p>做法是拿两个方向做点乘：一个是「从灯指向这个片元」，一个是锥轴 <code>u-light-dir</code>。先把方向写成公式：</p>
+
+      <p><code>toFrag = normalize(fragPos - lightPos)</code>　（从灯指向片元）</p>
+      <p><code>cosTheta = dot(toFrag, lightDir)</code></p>
+
+      <p>因为两个方向都归一化了，<code>cosTheta</code> 就是夹角的余弦：片元落在锥轴上时是 1，越靠锥的外沿越小。注意这里的方向是「灯 → 片元」，和点光里「片元 → 灯」的 <code>l</code> 正好相反——聚光要判断的是「光射出去的方向」有没有落在锥里。</p>
+
+      <p>再拿 <code>cosTheta</code> 和两个门限比：内锥 12.5° 的余弦、外锥 17.5° 的余弦。因为余弦在 0°..180° 上单调递减，内锥角更小、余弦更大，所以 <code>cosOuter &lt; cosInner</code>。落在内锥里 intensity 给 1、落在外锥外给 0、夹在中间的那 5° 用 <code>smoothstep</code> 平滑过渡：</p>
+
+      <p><code>intensity = smoothstep(cosOuter, cosInner, cosTheta)</code></p>
+
+      <p><code>smoothstep(edge0, edge1, x)</code> 在 <code>x ≤ edge0</code> 时是 0、<code>x ≥ edge1</code> 时是 1，中间用三次曲线平滑过渡。所以 <code>cosTheta</code> 从外锥余弦走到内锥余弦时，intensity 从 0 平滑升到 1——这段过渡就是锥边的「软」：</p>
+
+      <figure class="figure">
+        <svg viewBox="0 0 720 240" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>三种光源并排：方向光是一束平行箭头（无位置、无衰减）；点光从一点向四周辐射（有位置、有衰减）；聚光只在一个锥内射出（有位置、有方向、有衰减、有锥）</title>
+          <defs>
+            <marker id="c11-warm" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#d9822b"/>
+            </marker>
+          </defs>
+
+          <line x1="30" y1="150" x2="210" y2="150" stroke="var(--line)" stroke-width="2"/>
+          <circle cx="196" cy="34" r="9" fill="none" stroke="#d9822b" stroke-width="1.8"/>
+          <line x1="196" y1="18" x2="196" y2="10" stroke="#d9822b" stroke-width="1.5"/>
+          <line x1="212" y1="34" x2="220" y2="34" stroke="#d9822b" stroke-width="1.5"/>
+          <line x1="207" y1="23" x2="212" y2="18" stroke="#d9822b" stroke-width="1.5"/>
+          <line x1="207" y1="45" x2="212" y2="50" stroke="#d9822b" stroke-width="1.5"/>
+          <line x1="185" y1="23" x2="180" y2="18" stroke="#d9822b" stroke-width="1.5"/>
+          <line x1="93" y1="46" x2="55" y2="146" stroke="#d9822b" stroke-width="1.8" marker-end="url(#c11-warm)"/>
+          <line x1="123" y1="46" x2="85" y2="146" stroke="#d9822b" stroke-width="1.8" marker-end="url(#c11-warm)"/>
+          <line x1="153" y1="46" x2="115" y2="146" stroke="#d9822b" stroke-width="1.8" marker-end="url(#c11-warm)"/>
+          <line x1="183" y1="46" x2="145" y2="146" stroke="#d9822b" stroke-width="1.8" marker-end="url(#c11-warm)"/>
+
+          <line x1="270" y1="150" x2="450" y2="150" stroke="var(--line)" stroke-width="2"/>
+          <line x1="360" y1="85" x2="360" y2="140" stroke="#d9822b" stroke-width="1.8" marker-end="url(#c11-warm)"/>
+          <line x1="360" y1="85" x2="399" y2="124" stroke="#d9822b" stroke-width="1.8" marker-end="url(#c11-warm)"/>
+          <line x1="360" y1="85" x2="415" y2="85" stroke="#d9822b" stroke-width="1.8" marker-end="url(#c11-warm)"/>
+          <line x1="360" y1="85" x2="399" y2="46" stroke="#d9822b" stroke-width="1.8" marker-end="url(#c11-warm)"/>
+          <line x1="360" y1="85" x2="360" y2="30" stroke="#d9822b" stroke-width="1.8" marker-end="url(#c11-warm)"/>
+          <line x1="360" y1="85" x2="321" y2="46" stroke="#d9822b" stroke-width="1.8" marker-end="url(#c11-warm)"/>
+          <line x1="360" y1="85" x2="305" y2="85" stroke="#d9822b" stroke-width="1.8" marker-end="url(#c11-warm)"/>
+          <line x1="360" y1="85" x2="321" y2="124" stroke="#d9822b" stroke-width="1.8" marker-end="url(#c11-warm)"/>
+          <circle cx="360" cy="85" r="5" fill="#d9822b"/>
+
+          <path d="M 600 62 L 556 150 L 644 150 Z" fill="var(--accent-soft)" stroke="none"/>
+          <line x1="510" y1="150" x2="690" y2="150" stroke="var(--line)" stroke-width="2"/>
+          <line x1="600" y1="62" x2="556" y2="150" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="5 4"/>
+          <line x1="600" y1="62" x2="644" y2="150" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="5 4"/>
+          <line x1="600" y1="62" x2="578" y2="140" stroke="#d9822b" stroke-width="1.8" marker-end="url(#c11-warm)"/>
+          <line x1="600" y1="62" x2="600" y2="144" stroke="#d9822b" stroke-width="1.8" marker-end="url(#c11-warm)"/>
+          <line x1="600" y1="62" x2="622" y2="140" stroke="#d9822b" stroke-width="1.8" marker-end="url(#c11-warm)"/>
+          <circle cx="600" cy="62" r="5" fill="#d9822b"/>
+          <text x="690" y="120" text-anchor="end" font-size="11" fill="var(--muted)">锥外无光</text>
+
+          <text x="120" y="196" text-anchor="middle" font-size="13" fill="var(--accent)">方向光</text>
+          <text x="120" y="216" text-anchor="middle" font-size="12" fill="var(--muted)">位置？否　方向？是　衰减？否　锥？否</text>
+
+          <text x="360" y="196" text-anchor="middle" font-size="13" fill="var(--accent)">点光</text>
+          <text x="360" y="216" text-anchor="middle" font-size="12" fill="var(--muted)">位置？是　方向？是　衰减？是　锥？否</text>
+
+          <text x="600" y="196" text-anchor="middle" font-size="13" fill="var(--accent)">聚光</text>
+          <text x="600" y="216" text-anchor="middle" font-size="12" fill="var(--muted)">位置？是　方向？是　衰减？是　锥？是</text>
+        </svg>
+        <figcaption class="figcaption">图 11-2 三种光源，四个问题：有位置？有方向？有衰减？有锥？——从「只有方向」到「位置 + 衰减 + 锥」</figcaption>
+      </figure>
+
+      <div class="code">
+        <div class="code-title">11-light-casters/spot.rkt：锥的判定与软边<a class="srclink" href="../code.html?f=11-light-casters/spot.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">          (float cos-theta (dot (normalize (- v-frag-pos u-light-pos)) u-light-dir))
+          (float intensity (smoothstep u-cos-outer u-cos-inner cos-theta))
+          ;; 两件事一起打折扣：锥外 intensity 是 0，整盏灯就照不到；
+          ;; 锥内还要按距离衰减。ambient 照旧不乘（它不是这盏灯给的光）。
+          (float spot (* intensity attenuation))</code></pre>
+      </div>
+
+      <p>本课的聚光把手电筒挂在相机上：<code>u-light-pos</code> 就是相机位置，<code>u-light-dir</code> 就是相机朝向，所以这两个 uniform 每帧都在变（相机绕场景慢慢转圈），光锥跟着一起扫过那排立方体。场景换回 06 课那种多立方体世界——十个立方体散布在原点周围，相机转起来时不同的立方体轮流进出光锥。</p>
+
+      <div class="note key">
+        <p><b>关键点</b>上传的是<b>余弦</b>不是角度。片元里比的是 <code>dot</code> 出来的 <code>cos-theta</code>，门限要是写成角度，就得每个像素做一次反三角把 <code>cos-theta</code> 掰回角度——白白多算一次 <code>acos</code>。所以 Racket 侧用 <code>(cos (degrees->radians 12.5))</code> 先算好再上传，片元里只剩一次比较。角度是给人看的，余弦是给 GPU 用的。</p>
+      </div>
+
+      <h2 id="s11-4">11.4 三种光的包含关系</h2>
+
+      <p>三个文件不是三套互不相干的公式，而是同一套公式逐次「加回一个被丢掉的量」：</p>
+
+      <ul>
+        <li><b>方向光 = 点光推到无穷远</b>：位置跑到无穷远，距离也就无穷大，「灯在哪」和「衰减」这两件事同时失去意义，只剩方向。</li>
+        <li><b>点光 = 聚光把锥角开到 180°</b>：外锥角开到半空间，所有方向都满足「在锥内」，<code>intensity</code> 恒为 1，锥这一项就退出了公式，剩下的正是点光。</li>
+        <li><b>聚光 = 点光 + 锥</b>：位置、方向、衰减一样不少，多的只是那个 <code>intensity</code>。</li>
+      </ul>
+
+      <p>所以从 <code>directional.rkt</code> 一路读到 <code>spot.rkt</code>，每份文件的片元都只比上一份多出来几行；把三份并排 diff，多出来的那几行正好就是它比上一种光「多知道的那件事」。</p>
+
+      <h2 id="s11-code">完整代码</h2>
+
+      <p><a class="filelink" href="../code.html?f=11-light-casters/directional.rkt">11-light-casters/directional.rkt</a>，方向光：只有方向，没有位置、没有衰减。</p>
+
+      <div class="code">
+        <div class="code-title">11-light-casters/directional.rkt<a class="srclink" href="../code.html?f=11-light-casters/directional.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">#lang glsl-opengl
+;; ============================================================
+;; 11 · 光从哪来（一）：方向光
+;; 运行：racket 11-light-casters/directional.rkt
+;; 上一课：10-lighting-maps/lighting-maps.rkt
+;; ============================================================
+;; 到 10 课为止，灯一直是"世界里的某个点"：uniform 给出它的位置，片元拿位置算方向。
+;; 现实里的光不止这一种。11 课把"光从哪来"拆成三种，本节是第一种：
+;;   directional（方向光）——太阳这类离得足够远的光源，到地面的光线已经平行
+;; 既然所有光线都平行，"灯在哪"就没有意义了：把太阳挪远一点、挪高一点，照到立方体
+;; 上的方向几乎不变。所以本课把 u-light-pos 换成 u-light-dir——只留方向。
+;;
+;; 11 课一节三个文件（directional / point / spot），共用同一套骨架：
+;;   · pos + normal 的 glsl-struct 顶点布局、法线矩阵、深度测试、相机（同 09 课）
+;;   · 四个立方体、一份 VAO、一个 program、不画灯立方体（位置光才有"灯在哪"）
+;; 差别只在片元那几行。本文件与 point.rkt 的差别只有三处：
+;;   ① uniform：u-light-dir（一个方向）顶掉 point 的 u-light-pos + 三个衰减系数
+;;   ② 片元里 light-dir 是常量取反，不再依赖 v-frag-pos——每个片元看到的光方向一样
+;;   ③ 没有 attenuation 那项乘法（距离不进公式）
+;; 其余逐行相同，和 point.rkt diff 着读，正好看清方向光丢掉了什么。
+
+(require racket/class
+         racket/math                     ; degrees-&gt;radians
+         "../lib/window.rkt"
+         "../lib/matrix.rkt")            ; m-look-at / m-perspective / m-normal-matrix / …
+
+;; ------------------------------------------------------------
+;; 一、窗口尺寸与 aspect（同 06 / 09 课）
+;; ------------------------------------------------------------
+(define win-w 800)
+(define win-h 600)
+(define aspect (/ win-w win-h))
+
+;; ------------------------------------------------------------
+;; 二、着色器
+;; ------------------------------------------------------------
+;; 顶点着色器与 09 课逐行相同：算好裁剪坐标，把世界坐标和世界法线传给片元。
+;; （v-frag-pos 本课只有高光用得上——diffuse 那边不再需要"这一点在哪"。）
+(glsl-shader vert-src
+  (version 330 core)
+        (layout (location 0) in vec-3 pos)      ; 属性 0：局部坐标
+        (layout (location 1) in vec-3 normal)   ; 属性 1：法线
+        (uniform mat-4 u-model)
+        (uniform mat-4 u-view)
+        (uniform mat-4 u-proj)
+        (uniform mat-3 u-normal-matrix)            ; 法线专用的 mat-3（见 09 课 9.2）
+        (out vec-3 v-normal)
+        (out vec-3 v-frag-pos)
+        (define (main) void
+          (set! v-normal (* u-normal-matrix normal))
+          (set! v-frag-pos (vec-3 (* u-model (vec-4 pos 1.0))))
+          (set! gl-position (* u-proj (* u-view (* u-model (vec-4 pos 1.0)))))))
+
+;; 物体的片元：与 09 课的三项相比，只动了 light-dir 这一行，再去掉衰减。
+;;
+;; u-light-dir 是光"往哪走"（这里是往下、往 -z 偏），而三项公式要的是"从这一点指向
+;; 光源"，取反即可。取反之后它就是个常量：不碰 v-frag-pos，更不碰任何距离。
+;; 这就是"太阳离得足够远"的数学样子——整个场景共用同一个光方向。
+;;
+;; （这里用 Racket 风格的连字符；racket-shader 会换成 GLSL 的 _，见 09 课的说明。）
+(glsl-shader frag-src
+  (version 330 core)
+        (in vec-3 v-normal)
+        (in vec-3 v-frag-pos)
+        (uniform vec-3 u-light-dir)               ; 光的传播方向（不是"指向光"）
+        (uniform vec-3 u-light-color)             ; 光的颜色
+        (uniform vec-3 u-view-pos)                ; 相机位置——高光要它
+        (uniform vec-3 u-object-color)            ; 物体本色
+        (out vec-4 frag-color)
+        (define (main) void
+          (vec-3 norm (normalize v-normal))
+          (vec-3 light-dir (normalize (- u-light-dir)))
+          (float ambient 0.1)
+          (float diff (max (dot norm light-dir) 0.0))
+          (vec-3 reflect-dir (reflect (- light-dir) norm))
+          (vec-3 view-dir (normalize (- u-view-pos v-frag-pos)))
+          (float spec (* (pow (max (dot view-dir reflect-dir) 0.0) 32.0) 0.5))
+          ;; 这里没有 attenuation：光走到哪儿都是同一个强度，距离不进公式。
+          (set! frag-color (vec-4 (* (+ ambient diff spec) u-light-color u-object-color) 1.0))))
+
+;; ------------------------------------------------------------
+;; 三、立方体几何：24 个顶点，每个带位置 + 法线（同 09 课）
+;; ------------------------------------------------------------
+;; 同一个立方体、同样的 24 顶点 / 36 索引：每个面摊自己的一份顶点，因为每个面的
+;; 法线不同（前面 (0,0,1)、右面 (1,0,0)…）。布局仍用 glsl-struct 镜像到 CPU 侧，
+;; 步长与字段偏移全部由字段表给出，并在编译期按名字对齐（glsl-vertex-layout!），一个字节字面量都没有。
+(glsl-struct vertex (vec-3 pos) (vec-3 normal))
+
+(define cube-verts
+  (list
+   ;; 后面 z = -0.5，法线朝 -z
+   (vertex (vec-3 -0.5 -0.5 -0.5) (vec-3 0.0 0.0 -1.0))
+   (vertex (vec-3  0.5 -0.5 -0.5) (vec-3 0.0 0.0 -1.0))
+   (vertex (vec-3  0.5  0.5 -0.5) (vec-3 0.0 0.0 -1.0))
+   (vertex (vec-3 -0.5  0.5 -0.5) (vec-3 0.0 0.0 -1.0))
+   ;; 前面 z = +0.5，法线朝 +z
+   (vertex (vec-3 -0.5 -0.5  0.5) (vec-3 0.0 0.0 1.0))
+   (vertex (vec-3  0.5 -0.5  0.5) (vec-3 0.0 0.0 1.0))
+   (vertex (vec-3  0.5  0.5  0.5) (vec-3 0.0 0.0 1.0))
+   (vertex (vec-3 -0.5  0.5  0.5) (vec-3 0.0 0.0 1.0))
+   ;; 左面 x = -0.5，法线朝 -x
+   (vertex (vec-3 -0.5  0.5  0.5) (vec-3 -1.0 0.0 0.0))
+   (vertex (vec-3 -0.5  0.5 -0.5) (vec-3 -1.0 0.0 0.0))
+   (vertex (vec-3 -0.5 -0.5 -0.5) (vec-3 -1.0 0.0 0.0))
+   (vertex (vec-3 -0.5 -0.5  0.5) (vec-3 -1.0 0.0 0.0))
+   ;; 右面 x = +0.5，法线朝 +x
+   (vertex (vec-3  0.5  0.5  0.5) (vec-3 1.0 0.0 0.0))
+   (vertex (vec-3  0.5  0.5 -0.5) (vec-3 1.0 0.0 0.0))
+   (vertex (vec-3  0.5 -0.5 -0.5) (vec-3 1.0 0.0 0.0))
+   (vertex (vec-3  0.5 -0.5  0.5) (vec-3 1.0 0.0 0.0))
+   ;; 底面 y = -0.5，法线朝 -y
+   (vertex (vec-3 -0.5 -0.5 -0.5) (vec-3 0.0 -1.0 0.0))
+   (vertex (vec-3  0.5 -0.5 -0.5) (vec-3 0.0 -1.0 0.0))
+   (vertex (vec-3  0.5 -0.5  0.5) (vec-3 0.0 -1.0 0.0))
+   (vertex (vec-3 -0.5 -0.5  0.5) (vec-3 0.0 -1.0 0.0))
+   ;; 顶面 y = +0.5，法线朝 +y
+   (vertex (vec-3 -0.5  0.5 -0.5) (vec-3 0.0 1.0 0.0))
+   (vertex (vec-3  0.5  0.5 -0.5) (vec-3 0.0 1.0 0.0))
+   (vertex (vec-3  0.5  0.5  0.5) (vec-3 0.0 1.0 0.0))
+   (vertex (vec-3 -0.5  0.5  0.5) (vec-3 0.0 1.0 0.0))))
+
+(define cube-data (apply concat-vecs (map vertex-&gt;f32vector cube-verts)))
+
+(define indices
+  (u16-array 0 3 2   2 1 0        ; 后面
+             4 5 6   6 7 4        ; 前面
+             8 9 10  10 11 8      ; 左面
+             12 14 13  14 12 15   ; 右面
+             16 17 18  18 19 16   ; 底面
+             20 22 21  22 20 23)) ; 顶面
+
+;; ------------------------------------------------------------
+;; 四、场景：四个立方体 + 一台不动的相机
+;; ------------------------------------------------------------
+(define object-color (vec-3 1.0 0.5 0.31))      ; 物体本色：橙
+(define light-color (vec-3 1.0 1.0 1.0))        ; 光的颜色：白
+;; 光传播的方向：往下、往 -z 偏一点，像是下午偏西的太阳。三个数不必自己归一化，
+;; 片元里的 normalize 会处理。
+(define light-dir (vec-3 -0.2 -1.0 -0.3))
+
+;; 四个立方体排在 z = 0.5 / -1 / -3 / -5：离相机 6.4 / 7.5 / 8.9 / 10.3，
+;; 最近的和最远的大约差一倍半。摆这一排就是为了看一件事——四个立方体都只平移、
+;; 不旋转，所以"同一个朝向的面"在四处都存在；跑起来会看到它们亮得一模一样
+;; （后面验收里量过：四个顶面的像素值完全相同）。
+;; 方向光下距离根本不进公式（片元里没有 v-frag-pos 参与 diff），点光那节用的是
+;; 同一张位置表、同一台相机，四个立方体却会亮成四个档次——两份文件对着看最清楚。
+(define cube-positions
+  (list (vec-3 0.0 0.0  0.5)
+        (vec-3 0.0 0.0 -1.0)
+        (vec-3 0.0 0.0 -3.0)
+        (vec-3 0.0 0.0 -5.0)))
+
+;; 相机偏在右上方看向这一排的中段：四个立方体因此错开排进画面，不会互相遮住。
+(define eye-pos (vec-3 5.0 3.0 4.0))
+(define look-at-pos (vec-3 0.0 0.0 -2.0))
+
+(define program #f)
+(define vao #f)
+
+(glsl-uniform-setter! program vert-src frag-src)
+
+(define (init)
+  (set! program (build-program (gl-vertex-shader vert-src)
+                               (gl-fragment-shader frag-src)))
+
+  ;; 画立体的东西就得开深度测试（06 课）。
+  (gl-enable gl-depth-test)
+
+  ;; ---- VAO / VBO / EBO ----
+  (set! vao (vertex-array-new))
+  (gl-bind-vertex-array vao)
+
+  (define vbo (buffer-new))
+  (gl-bind-buffer gl-array-buffer vbo)
+  (buffer-upload gl-array-buffer cube-data gl-static-draw)
+  (glsl-vertex-layout! vert-src vertex)
+
+  (define ebo (buffer-new))
+  (gl-bind-buffer gl-element-array-buffer ebo)
+  (buffer-upload gl-element-array-buffer indices gl-static-draw)
+
+  (gl-bind-vertex-array 0)
+
+)
+
+(define (draw)
+  (gl-clear-color 0.10 0.12 0.20 1.0)
+  (gl-clear (bitwise-ior gl-color-buffer-bit gl-depth-buffer-bit))
+
+  (define view (m-look-at eye-pos look-at-pos (vec-3 0.0 1.0 0.0)))
+  (define proj (m-perspective (degrees-&gt;radians 45.0) aspect 0.1 100.0))
+
+  (gl-bind-vertex-array vao)
+  (program-use program)
+
+  ;; 光参数和两个矩阵整帧只算一份，循环外上传一次；model 每个立方体不同，循环里传。
+  (set-u-view! view)
+  (set-u-proj! proj)
+  (set-u-light-dir! light-dir)
+  (set-u-light-color! light-color)
+  (set-u-view-pos! eye-pos)
+  (set-u-object-color! object-color)
+
+  (for ([pos (in-list cube-positions)])
+    ;; 只平移、不旋转：四个立方体的朝向完全一样，"同一个面"才可比较。
+    (define model (m-translate pos))
+    (set-u-model! model)
+    ;; 只含平移时法线矩阵就是单位阵；照 09 课的规矩照样上传，给某个立方体加旋转时
+    ;; 不用改别处（见文件末尾"试试看"）。
+    (set-u-normal-matrix! (m-normal-matrix model))
+    (gl-draw-elements gl-triangles 36 gl-unsigned-short 0))
+
+  (gl-bind-vertex-array 0))
+
+(define-values (frame canvas)
+  (make-window #:title "11 方向光"
+               #:width win-w
+               #:height win-h
+               #:init init
+               #:draw draw
+               ;; 窗口尺寸变化、viewport 重设之后被调用，参数是新的客户区宽高。
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+(send frame show #t)
+
+;; 没有 timer：四个立方体是静姿态，没有东西在动，就不必每 16ms 请求一次重绘。
+
+;; ------------------------------------------------------------
+;; 试试看（改完重跑）：
+;;   · light-dir 改成 (vec-3 0.0 -1.0 0.0)（正午太阳，光垂直往下）：只有顶面亮，
+;;     四个立方体的前面和右侧面一起暗下去只剩 ambient。
+;;   · light-dir 改成 (vec-3 -1.0 -0.2 -0.3)（快落山的夕阳）：光几乎平行于地面，
+;;     顶面变暗、朝着 -x 的那一面亮起来——同一个立方体换了个面亮。
+;;   · 把某个立方体的 model 换成 (mat4-mul (m-translate pos) (m-rotate-y …))：
+;;     它自己转起来，于是"它哪一面亮"和另外三个错开——方向光下只有朝向管用。
+;; ============================================================</code></pre>
+      </div>
+
+      <p><a class="filelink" href="../code.html?f=11-light-casters/point.rkt">11-light-casters/point.rkt</a>，点光：位置回来了，diffuse 与 specular 按 <code>1/(kc + kl·d + kq·d²)</code> 缩水。</p>
+
+      <div class="code">
+        <div class="code-title">11-light-casters/point.rkt<a class="srclink" href="../code.html?f=11-light-casters/point.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">#lang glsl-opengl
+;; ============================================================
+;; 11 · 光从哪来（二）：点光与衰减
+;; 运行：racket 11-light-casters/point.rkt
+;; 上一份：11-light-casters/directional.rkt
+;; ============================================================
+;; 方向光（directional.rkt）只留了方向，因为它假设光源远到光线已经平行。
+;; 灯泡不是这样的：它就挂在房间里，光从这一点向四周辐射，越远越弱。
+;; 本节把"位置"和"衰减"两件东西加回来：
+;;   point   ① 有位置——u-light-pos 回来了，光方向逐片元算
+;;           ② 有衰减——能量摊在半径 d 的球面上，球面积随 d² 涨，于是
+;;                        attenuation = 1 / (kc + kl·d + kq·d²)
+;; 本文件与 directional.rkt 的差别只有三处（其余逐行相同，可以 diff 着读）：
+;;   ① uniform：u-light-pos + u-kc / u-kl / u-kq 顶掉 directional 的 u-light-dir
+;;   ② 片元多算 distance 与 attenuation 两行
+;;   ③ diffuse 与 specular 各乘一次 attenuation（ambient 不乘，见片元里的注释）
+;; 场景也换了：四个立方体从"离相机 0/2/4/6"改成"离灯 1.5/3/5/7"——
+;; 同样的四个立方体，这次会因为距离亮成四个档次。
+
+(require racket/class
+         racket/math                     ; degrees-&gt;radians
+         "../lib/window.rkt"
+         "../lib/matrix.rkt")            ; m-look-at / m-perspective / m-normal-matrix / …
+
+;; ------------------------------------------------------------
+;; 一、窗口尺寸与 aspect（同 06 / 09 课）
+;; ------------------------------------------------------------
+(define win-w 800)
+(define win-h 600)
+(define aspect (/ win-w win-h))
+
+;; ------------------------------------------------------------
+;; 二、着色器
+;; ------------------------------------------------------------
+;; 顶点着色器与 directional.rkt 逐行相同。
+(glsl-shader vert-src
+  (version 330 core)
+        (layout (location 0) in vec-3 pos)
+        (layout (location 1) in vec-3 normal)
+        (uniform mat-4 u-model)
+        (uniform mat-4 u-view)
+        (uniform mat-4 u-proj)
+        (uniform mat-3 u-normal-matrix)
+        (out vec-3 v-normal)
+        (out vec-3 v-frag-pos)
+        (define (main) void
+          (set! v-normal (* u-normal-matrix normal))
+          (set! v-frag-pos (vec-3 (* u-model (vec-4 pos 1.0))))
+          (set! gl-position (* u-proj (* u-view (* u-model (vec-4 pos 1.0)))))))
+
+;; 物体的片元：在 directional 的三项上加了 distance 与 attenuation。
+;;
+;; light-dir 这次要逐片元算——"从这一点指向灯"的方向，每个像素都不一样，
+;; 这正是方向光省掉的那件事（它整帧共用一个方向）。
+(glsl-shader frag-src
+  (version 330 core)
+        (in vec-3 v-normal)
+        (in vec-3 v-frag-pos)
+        (uniform vec-3 u-light-pos)               ; 灯在世界里的位置
+        (uniform float u-kc)                    ; 衰减的常数项
+        (uniform float u-kl)                    ; 衰减的线性项
+        (uniform float u-kq)                    ; 衰减的二次项
+        (uniform vec-3 u-light-color)
+        (uniform vec-3 u-view-pos)
+        (uniform vec-3 u-object-color)
+        (out vec-4 frag-color)
+        (define (main) void
+          (vec-3 norm (normalize v-normal))
+          (vec-3 light-dir (normalize (- u-light-pos v-frag-pos)))
+          (float distance (length (- u-light-pos v-frag-pos)))
+          ;; 衰减：分母里的三项各管一段距离（见页面上那张曲线与参数表）。
+          ;; d = 0 时分母退化成 kc，所以 kc 是"贴着灯时的保底"——它不该是 0。
+          (float attenuation (/ 1.0 (+ u-kc (* u-kl distance) (* u-kq distance distance))))
+          (float ambient 0.1)
+          ;; diffuse 和 specular 都是"这盏灯送来的光"，所以两处都乘 attenuation；
+          ;; ambient 不乘：环境光是场景里来回弹的那份光，不是这盏灯给的，
+          ;; 乘上去会让远处的背光面越来越黑，与事实不符。
+          (float diff (* (max (dot norm light-dir) 0.0) attenuation))
+          (vec-3 reflect-dir (reflect (- light-dir) norm))
+          (vec-3 view-dir (normalize (- u-view-pos v-frag-pos)))
+          (float spec (* (* (pow (max (dot view-dir reflect-dir) 0.0) 32.0) 0.5) attenuation))
+          (set! frag-color (vec-4 (* (+ ambient diff spec) u-light-color u-object-color) 1.0))))
+
+;; ------------------------------------------------------------
+;; 三、立方体几何：与 directional.rkt 逐行相同（含 glsl-struct 布局）
+;; ------------------------------------------------------------
+(glsl-struct vertex (vec-3 pos) (vec-3 normal))
+
+(define cube-verts
+  (list
+   ;; 后面 z = -0.5，法线朝 -z
+   (vertex (vec-3 -0.5 -0.5 -0.5) (vec-3 0.0 0.0 -1.0))
+   (vertex (vec-3  0.5 -0.5 -0.5) (vec-3 0.0 0.0 -1.0))
+   (vertex (vec-3  0.5  0.5 -0.5) (vec-3 0.0 0.0 -1.0))
+   (vertex (vec-3 -0.5  0.5 -0.5) (vec-3 0.0 0.0 -1.0))
+   ;; 前面 z = +0.5，法线朝 +z
+   (vertex (vec-3 -0.5 -0.5  0.5) (vec-3 0.0 0.0 1.0))
+   (vertex (vec-3  0.5 -0.5  0.5) (vec-3 0.0 0.0 1.0))
+   (vertex (vec-3  0.5  0.5  0.5) (vec-3 0.0 0.0 1.0))
+   (vertex (vec-3 -0.5  0.5  0.5) (vec-3 0.0 0.0 1.0))
+   ;; 左面 x = -0.5，法线朝 -x
+   (vertex (vec-3 -0.5  0.5  0.5) (vec-3 -1.0 0.0 0.0))
+   (vertex (vec-3 -0.5  0.5 -0.5) (vec-3 -1.0 0.0 0.0))
+   (vertex (vec-3 -0.5 -0.5 -0.5) (vec-3 -1.0 0.0 0.0))
+   (vertex (vec-3 -0.5 -0.5  0.5) (vec-3 -1.0 0.0 0.0))
+   ;; 右面 x = +0.5，法线朝 +x
+   (vertex (vec-3  0.5  0.5  0.5) (vec-3 1.0 0.0 0.0))
+   (vertex (vec-3  0.5  0.5 -0.5) (vec-3 1.0 0.0 0.0))
+   (vertex (vec-3  0.5 -0.5 -0.5) (vec-3 1.0 0.0 0.0))
+   (vertex (vec-3  0.5 -0.5  0.5) (vec-3 1.0 0.0 0.0))
+   ;; 底面 y = -0.5，法线朝 -y
+   (vertex (vec-3 -0.5 -0.5 -0.5) (vec-3 0.0 -1.0 0.0))
+   (vertex (vec-3  0.5 -0.5 -0.5) (vec-3 0.0 -1.0 0.0))
+   (vertex (vec-3  0.5 -0.5  0.5) (vec-3 0.0 -1.0 0.0))
+   (vertex (vec-3 -0.5 -0.5  0.5) (vec-3 0.0 -1.0 0.0))
+   ;; 顶面 y = +0.5，法线朝 +y
+   (vertex (vec-3 -0.5  0.5 -0.5) (vec-3 0.0 1.0 0.0))
+   (vertex (vec-3  0.5  0.5 -0.5) (vec-3 0.0 1.0 0.0))
+   (vertex (vec-3  0.5  0.5  0.5) (vec-3 0.0 1.0 0.0))
+   (vertex (vec-3 -0.5  0.5  0.5) (vec-3 0.0 1.0 0.0))))
+
+(define cube-data (apply concat-vecs (map vertex-&gt;f32vector cube-verts)))
+
+(define indices
+  (u16-array 0 3 2   2 1 0        ; 后面
+             4 5 6   6 7 4        ; 前面
+             8 9 10  10 11 8      ; 左面
+             12 14 13  14 12 15   ; 右面
+             16 17 18  18 19 16   ; 底面
+             20 22 21  22 20 23)) ; 顶面
+
+;; ------------------------------------------------------------
+;; 四、场景：一盏灯 + 四个立方体 + 一台不动的相机
+;; ------------------------------------------------------------
+(define object-color (vec-3 1.0 0.5 0.31))      ; 物体本色：橙
+(define light-color (vec-3 1.0 1.0 1.0))        ; 光的颜色：白
+;; 灯在 z = 2 的轴上，不画它的替身（本课看的是"亮度随距离怎么变"，不是"灯在哪"）。
+(define light-pos (vec-3 0.0 0.0 2.0))
+
+;; 衰减系数取 learnopengl 那一套经典值：kc = 1.0 / kl = 0.09 / kq = 0.032，
+;; 大致覆盖 50 个单位以内的距离（参数表见页面上 11.2 节）。
+;;   kc 常数项：d = 0 时分母只剩它，避免近处除以 0、亮度爆表
+;;   kl 线性项：中段距离的主力，让亮度稳稳地掉
+;;   kq 二次项：远段的主力，d 一大就压过前两项
+(define k-constant 1.0)
+(define k-linear 0.09)
+(define k-quadratic 0.032)
+
+;; 四个立方体排在灯正前方的轴上，中心离灯 1.5 / 3 / 5 / 7：
+;;   z = 0.5 → 距灯 1.5；z = -1 → 3；z = -3 → 5；z = -5 → 7
+;; 和 directional.rkt 同一份几何、同样的朝向，这次画面上会亮成四个档次：
+;; 最近的明显亮、最远的只剩一点橙色——距离这次进公式了。
+(define cube-positions
+  (list (vec-3 0.0 0.0  0.5)
+        (vec-3 0.0 0.0 -1.0)
+        (vec-3 0.0 0.0 -3.0)
+        (vec-3 0.0 0.0 -5.0)))
+
+;; 相机偏到右上方（5, 3, 4）看向这一排的中段：四个立方体因此错开排进画面，
+;; 不会一个躲在前一个身后。
+(define eye-pos (vec-3 5.0 3.0 4.0))
+(define look-at-pos (vec-3 0.0 0.0 -2.0))
+
+(define program #f)
+(define vao #f)
+
+(glsl-uniform-setter! program vert-src frag-src)
+
+(define (init)
+  (set! program (build-program (gl-vertex-shader vert-src)
+                               (gl-fragment-shader frag-src)))
+
+  ;; 画立体的东西就得开深度测试（06 课）。
+  (gl-enable gl-depth-test)
+
+  ;; ---- VAO / VBO / EBO ----
+  (set! vao (vertex-array-new))
+  (gl-bind-vertex-array vao)
+
+  (define vbo (buffer-new))
+  (gl-bind-buffer gl-array-buffer vbo)
+  (buffer-upload gl-array-buffer cube-data gl-static-draw)
+  (glsl-vertex-layout! vert-src vertex)
+
+  (define ebo (buffer-new))
+  (gl-bind-buffer gl-element-array-buffer ebo)
+  (buffer-upload gl-element-array-buffer indices gl-static-draw)
+
+  (gl-bind-vertex-array 0)
+
+)
+
+(define (draw)
+  (gl-clear-color 0.10 0.12 0.20 1.0)
+  (gl-clear (bitwise-ior gl-color-buffer-bit gl-depth-buffer-bit))
+
+  (define view (m-look-at eye-pos look-at-pos (vec-3 0.0 1.0 0.0)))
+  (define proj (m-perspective (degrees-&gt;radians 45.0) aspect 0.1 100.0))
+
+  (gl-bind-vertex-array vao)
+  (program-use program)
+
+  ;; 灯的位置与三个系数整帧只上传一次：它们不随立方体变。
+  (set-u-view! view)
+  (set-u-proj! proj)
+  (set-u-light-pos! light-pos)
+  (set-u-kc! k-constant)
+  (set-u-kl! k-linear)
+  (set-u-kq! k-quadratic)
+  (set-u-light-color! light-color)
+  (set-u-view-pos! eye-pos)
+  (set-u-object-color! object-color)
+
+  (for ([pos (in-list cube-positions)])
+    (define model (m-translate pos))
+    (set-u-model! model)
+    (set-u-normal-matrix! (m-normal-matrix model))
+    (gl-draw-elements gl-triangles 36 gl-unsigned-short 0))
+
+  (gl-bind-vertex-array 0))
+
+(define-values (frame canvas)
+  (make-window #:title "11 点光"
+               #:width win-w
+               #:height win-h
+               #:init init
+               #:draw draw
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+(send frame show #t)
+
+;; 没有 timer：灯和四个立方体都不动，画面上没有东西在变。
+
+;; ------------------------------------------------------------
+;; 试试看（改完重跑）：
+;;   · k-quadratic 从 0.032 改成 0.007：远段掉得慢多了，最远那个立方体明显抬亮。
+;;   · k-constant 从 1.0 改成 0.0：分母失去保底，最近的立方体直接爆亮成一片白。
+;;   · light-pos 的 z 从 2.0 改成 0.0：灯挪到第二个立方体旁边，近的两个更亮、
+;;     远的两个更暗——把"距离"这个变量整体挪一挪，梯度跟着挪。
+;; ============================================================</code></pre>
+      </div>
+
+      <p><a class="filelink" href="../code.html?f=11-light-casters/spot.rkt">11-light-casters/spot.rkt</a>，聚光：点光再乘上锥内的 <code>smoothstep</code>，手电筒挂在绕圈的相机上。</p>
+
+      <div class="code">
+        <div class="code-title">11-light-casters/spot.rkt<a class="srclink" href="../code.html?f=11-light-casters/spot.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">#lang glsl-opengl
+;; ============================================================
+;; 11 · 光从哪来（三）：聚光
+;; 运行：racket 11-light-casters/spot.rkt
+;; 上一份：11-light-casters/point.rkt
+;; ============================================================
+;; 点光向四周辐射，四面八方一样亮。手电筒、路灯、舞台追光不是这样：光被罩住，
+;; 只朝一个锥里射。本节在点光上加一个锥：
+;;   spot   ① 有位置、有衰减（照抄 point）——手电筒还是"一盏灯"
+;;          ② 多一个方向：光锥的轴
+;;          ③ 多一个锥角：内外两个角，边界用 smoothstep 做软过渡
+;; 本文件与 point.rkt 的差别只有三处（其余逐行相同，可以 diff 着读）：
+;;   ① uniform：多出 u-light-dir / u-cos-inner / u-cos-outer
+;;   ② 片元多算 cos-theta 与 intensity 两行
+;;   ③ diffuse / specular 乘的是 intensity × attenuation，而不是单独一个 attenuation
+;;
+;; 相机这次在动：手电筒挂在相机上（位置 = 相机位置、方向 = 相机朝向），
+;; 相机绕着场景慢慢转圈，光锥跟着扫过一排立方体。为此本课第一次在 11 课里用了 timer。
+
+(require racket/class
+         racket/gui                      ; timer%
+         racket/math                     ; degrees-&gt;radians / cos
+         "../lib/window.rkt"
+         "../lib/matrix.rkt")            ; m-look-at / m-perspective / m-normal-matrix / …
+
+;; ------------------------------------------------------------
+;; 一、窗口尺寸与 aspect（同 06 / 09 课）
+;; ------------------------------------------------------------
+(define win-w 800)
+(define win-h 600)
+(define aspect (/ win-w win-h))
+
+;; ------------------------------------------------------------
+;; 二、着色器
+;; ------------------------------------------------------------
+;; 顶点着色器与 point.rkt 逐行相同。
+(glsl-shader vert-src
+  (version 330 core)
+        (layout (location 0) in vec-3 pos)
+        (layout (location 1) in vec-3 normal)
+        (uniform mat-4 u-model)
+        (uniform mat-4 u-view)
+        (uniform mat-4 u-proj)
+        (uniform mat-3 u-normal-matrix)
+        (out vec-3 v-normal)
+        (out vec-3 v-frag-pos)
+        (define (main) void
+          (set! v-normal (* u-normal-matrix normal))
+          (set! v-frag-pos (vec-3 (* u-model (vec-4 pos 1.0))))
+          (set! gl-position (* u-proj (* u-view (* u-model (vec-4 pos 1.0)))))))
+
+;; 物体的片元：在 point 的"位置 + 衰减"上再加一段锥的判定。
+;;
+;; cos-theta 是"从灯指向这一点的方向"与"锥轴"的夹角余弦：锥轴上为 1，
+;; 越往锥的外沿越小。拿它和两个门限比，就知道这个片元在锥里、锥外、还是边上：
+;;   cos-theta ≥ u-cos-inner   在锥心里，intensity = 1
+;;   cos-theta ≤ u-cos-outer   在锥外，intensity = 0
+;;   两者之间              边上，smoothstep 给一段平滑过渡（不是硬切）
+;; 传进来的门限是余弦而不是角度：因为这里比的就是 cos-theta，两边都化成余弦就不用
+;; 在片元里做反三角（见页面上 11.3 的 note.key）。
+(glsl-shader frag-src
+  (version 330 core)
+        (in vec-3 v-normal)
+        (in vec-3 v-frag-pos)
+        (uniform vec-3 u-light-pos)               ; 灯的（也就是相机的）位置
+        (uniform vec-3 u-light-dir)               ; 锥轴：相机朝向
+        (uniform float u-cos-inner)              ; 内锥角的余弦
+        (uniform float u-cos-outer)              ; 外锥角的余弦
+        (uniform float u-kc)
+        (uniform float u-kl)
+        (uniform float u-kq)
+        (uniform vec-3 u-light-color)
+        (uniform vec-3 u-view-pos)
+        (uniform vec-3 u-object-color)
+        (out vec-4 frag-color)
+        (define (main) void
+          (vec-3 norm (normalize v-normal))
+          (vec-3 light-dir (normalize (- u-light-pos v-frag-pos)))
+          (float distance (length (- u-light-pos v-frag-pos)))
+          (float attenuation (/ 1.0 (+ u-kc (* u-kl distance) (* u-kq distance distance))))
+          (float cos-theta (dot (normalize (- v-frag-pos u-light-pos)) u-light-dir))
+          (float intensity (smoothstep u-cos-outer u-cos-inner cos-theta))
+          ;; 两件事一起打折扣：锥外 intensity 是 0，整盏灯就照不到；
+          ;; 锥内还要按距离衰减。ambient 照旧不乘（它不是这盏灯给的光）。
+          (float spot (* intensity attenuation))
+          (float ambient 0.1)
+          (float diff (* (max (dot norm light-dir) 0.0) spot))
+          (vec-3 reflect-dir (reflect (- light-dir) norm))
+          (vec-3 view-dir (normalize (- u-view-pos v-frag-pos)))
+          (float spec (* (* (pow (max (dot view-dir reflect-dir) 0.0) 32.0) 0.5) spot))
+          (set! frag-color (vec-4 (* (+ ambient diff spec) u-light-color u-object-color) 1.0))))
+
+;; ------------------------------------------------------------
+;; 三、立方体几何：与 point.rkt 逐行相同（含 glsl-struct 布局）
+;; ------------------------------------------------------------
+(glsl-struct vertex (vec-3 pos) (vec-3 normal))
+
+(define cube-verts
+  (list
+   ;; 后面 z = -0.5，法线朝 -z
+   (vertex (vec-3 -0.5 -0.5 -0.5) (vec-3 0.0 0.0 -1.0))
+   (vertex (vec-3  0.5 -0.5 -0.5) (vec-3 0.0 0.0 -1.0))
+   (vertex (vec-3  0.5  0.5 -0.5) (vec-3 0.0 0.0 -1.0))
+   (vertex (vec-3 -0.5  0.5 -0.5) (vec-3 0.0 0.0 -1.0))
+   ;; 前面 z = +0.5，法线朝 +z
+   (vertex (vec-3 -0.5 -0.5  0.5) (vec-3 0.0 0.0 1.0))
+   (vertex (vec-3  0.5 -0.5  0.5) (vec-3 0.0 0.0 1.0))
+   (vertex (vec-3  0.5  0.5  0.5) (vec-3 0.0 0.0 1.0))
+   (vertex (vec-3 -0.5  0.5  0.5) (vec-3 0.0 0.0 1.0))
+   ;; 左面 x = -0.5，法线朝 -x
+   (vertex (vec-3 -0.5  0.5  0.5) (vec-3 -1.0 0.0 0.0))
+   (vertex (vec-3 -0.5  0.5 -0.5) (vec-3 -1.0 0.0 0.0))
+   (vertex (vec-3 -0.5 -0.5 -0.5) (vec-3 -1.0 0.0 0.0))
+   (vertex (vec-3 -0.5 -0.5  0.5) (vec-3 -1.0 0.0 0.0))
+   ;; 右面 x = +0.5，法线朝 +x
+   (vertex (vec-3  0.5  0.5  0.5) (vec-3 1.0 0.0 0.0))
+   (vertex (vec-3  0.5  0.5 -0.5) (vec-3 1.0 0.0 0.0))
+   (vertex (vec-3  0.5 -0.5 -0.5) (vec-3 1.0 0.0 0.0))
+   (vertex (vec-3  0.5 -0.5  0.5) (vec-3 1.0 0.0 0.0))
+   ;; 底面 y = -0.5，法线朝 -y
+   (vertex (vec-3 -0.5 -0.5 -0.5) (vec-3 0.0 -1.0 0.0))
+   (vertex (vec-3  0.5 -0.5 -0.5) (vec-3 0.0 -1.0 0.0))
+   (vertex (vec-3  0.5 -0.5  0.5) (vec-3 0.0 -1.0 0.0))
+   (vertex (vec-3 -0.5 -0.5  0.5) (vec-3 0.0 -1.0 0.0))
+   ;; 顶面 y = +0.5，法线朝 +y
+   (vertex (vec-3 -0.5  0.5 -0.5) (vec-3 0.0 1.0 0.0))
+   (vertex (vec-3  0.5  0.5 -0.5) (vec-3 0.0 1.0 0.0))
+   (vertex (vec-3  0.5  0.5  0.5) (vec-3 0.0 1.0 0.0))
+   (vertex (vec-3 -0.5  0.5  0.5) (vec-3 0.0 1.0 0.0))))
+
+(define cube-data (apply concat-vecs (map vertex-&gt;f32vector cube-verts)))
+
+(define indices
+  (u16-array 0 3 2   2 1 0        ; 后面
+             4 5 6   6 7 4        ; 前面
+             8 9 10  10 11 8      ; 左面
+             12 14 13  14 12 15   ; 右面
+             16 17 18  18 19 16   ; 底面
+             20 22 21  22 20 23)) ; 顶面
+
+;; ------------------------------------------------------------
+;; 四、场景：06 课那片立方体世界 + 一台绕圈的相机
+;; ------------------------------------------------------------
+(define object-color (vec-3 1.0 0.5 0.31))
+(define light-color (vec-3 1.0 1.0 1.0))
+
+;; 06 课那张位置表原样搬来（当时配的是棋盘纹理，这里配光照）。十个立方体散布在
+;; 半径 2 - 15 的范围里，相机绕一圈就能看见不同的立方体轮流进出光锥。
+;; 这次不给它们自转（06 / 07 课是转的）：本课要看的是"谁被照到"，静止的立方体
+;; 更容易对照。
+(define cube-positions
+  (list (vec-3  0.0  0.0   0.0)
+        (vec-3  2.0  5.0 -15.0)
+        (vec-3 -1.5 -2.2  -2.5)
+        (vec-3 -3.8 -2.0 -12.3)
+        (vec-3  2.4 -0.4  -3.5)
+        (vec-3 -1.7  3.0  -7.5)
+        (vec-3  1.3 -2.0  -2.5)
+        (vec-3  1.5  2.0  -2.5)
+        (vec-3  1.5  0.2  -1.5)
+        (vec-3 -1.3  1.0  -1.5)))
+
+;; 相机绕世界原点转圈（同 07 课的 orbit 写法，半径 4、高 1.5，慢了约一倍）：
+;;   eye = (4·cos(0.25t), 1.5, 4·sin(0.25t))
+;; 一圈约 25 秒。高 1.5 让镜头略高于场景中心，有一点俯视感。
+(define orbit-radius 4.0)
+(define orbit-height 1.5)
+(define orbit-speed 0.25)                      ; 弧度/秒
+(define scene-center (vec-3 0.0 0.0 0.0))
+
+;; 内外锥角：内 12.5°、外 17.5°（learnopengl 那套）。两个角相差 5°，
+;; 中间那圈就是 smoothstep 的软边。
+;;
+;; 为什么在 Racket 侧算好余弦再上传：片元里比的是 dot 出来的 cos-theta，
+;; 门限跟着化成余弦，片元就不用每像素做一次反三角（见页面上 11.3 的 note.key）。
+(define inner-deg 12.5)
+(define outer-deg 17.5)
+(define cos-inner (cos (degrees-&gt;radians inner-deg)))
+(define cos-outer (cos (degrees-&gt;radians outer-deg)))
+
+;; 衰减三系数与 point.rkt 同：手电筒也是"从一点射出、越远越弱"的灯。
+(define k-constant 1.0)
+(define k-linear 0.09)
+(define k-quadratic 0.032)
+
+(define program #f)
+(define vao #f)
+
+(glsl-uniform-setter! program vert-src frag-src)
+
+(define (init)
+  (set! program (build-program (gl-vertex-shader vert-src)
+                               (gl-fragment-shader frag-src)))
+
+  ;; 画立体的东西就得开深度测试（06 课）。
+  (gl-enable gl-depth-test)
+
+  ;; ---- VAO / VBO / EBO ----
+  (set! vao (vertex-array-new))
+  (gl-bind-vertex-array vao)
+
+  (define vbo (buffer-new))
+  (gl-bind-buffer gl-array-buffer vbo)
+  (buffer-upload gl-array-buffer cube-data gl-static-draw)
+  (glsl-vertex-layout! vert-src vertex)
+
+  (define ebo (buffer-new))
+  (gl-bind-buffer gl-element-array-buffer ebo)
+  (buffer-upload gl-element-array-buffer indices gl-static-draw)
+
+  (gl-bind-vertex-array 0)
+
+)
+
+(define (draw)
+  (define t (/ (current-inexact-monotonic-milliseconds) 1000.0))
+
+  (gl-clear-color 0.10 0.12 0.20 1.0)
+  (gl-clear (bitwise-ior gl-color-buffer-bit gl-depth-buffer-bit))
+
+  ;; ---- 相机：绕世界原点转圈（同 07 课）----
+  (define eye (vec-3 (* orbit-radius (cos (* t orbit-speed)))
+                    orbit-height
+                    (* orbit-radius (sin (* t orbit-speed)))))
+  (define view (m-look-at eye scene-center (vec-3 0.0 1.0 0.0)))
+  ;; 视场这里开大到 70°（其余各课都是 45°）：光锥全角只有 35°，而手电筒又挂在相机上，
+  ;; 用 45° 的话锥几乎铺满画面、只剩四个角是黑的；开大之后锥才是一块边界清楚的圆斑。
+  (define proj (m-perspective (degrees-&gt;radians 70.0) aspect 0.1 100.0))
+
+  ;; 手电筒挂在相机上：光的位置就是相机位置，锥轴就是相机朝向（eye → 场景中心）。
+  ;; 相机每帧都在动，所以 u-light-dir 也得每帧重算——不像方向光的 u-light-dir 是个常量，
+  ;; 也不像 point 的 u-light-pos 一动不动。相机转，光锥跟着一起转，扫过这排立方体。
+  (define light-dir (vnormalize (vsub scene-center eye)))
+
+  (gl-bind-vertex-array vao)
+  (program-use program)
+
+  (set-u-view! view)
+  (set-u-proj! proj)
+  (set-u-light-pos! eye)
+  (set-u-light-dir! light-dir)
+  (set-u-cos-inner! cos-inner)
+  (set-u-cos-outer! cos-outer)
+  (set-u-kc! k-constant)
+  (set-u-kl! k-linear)
+  (set-u-kq! k-quadratic)
+  (set-u-light-color! light-color)
+  ;; u-view-pos 就是相机位置，和 u-light-pos 是同一个点；两项都上传，片元各自取用
+  ;; （高光要的 v 和锥判定要的 l 从此处出发，方向刚好相反）。
+  (set-u-view-pos! eye)
+  (set-u-object-color! object-color)
+
+  (for ([pos (in-list cube-positions)])
+    (define model (m-translate pos))
+    (set-u-model! model)
+    (set-u-normal-matrix! (m-normal-matrix model))
+    (gl-draw-elements gl-triangles 36 gl-unsigned-short 0))
+
+  (gl-bind-vertex-array 0))
+
+(define-values (frame canvas)
+  (make-window #:title "11 聚光"
+               #:width win-w
+               #:height win-h
+               #:init init
+               #:draw draw
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+(send frame show #t)
+
+;; 相机在转，需要定时器不断请求重绘（同 07 课）。定时器只负责"每隔 16ms 请求重绘"，
+;; 绘制永远发生在 draw 里。
+(define timer
+  (new timer% [interval 16]
+              [notify-callback (lambda () (send canvas refresh))]))
+
+;; ------------------------------------------------------------
+;; 试试看（改完重跑）：
+;;   · 把 intensity 那一行换成手写的硬阶跃：
+;;       (float intensity (if (&gt; cos-theta u-cos-inner) 1.0 0.0))
+;;     光斑的边立刻从软变硬——smoothstep 那 5° 的过渡没了。
+;;   · inner-deg / outer-deg 改成 5.0 / 8.0：光斑收窄成一小块，只有画面正中那个
+;;     立方体亮。
+;;   · 把 inner-deg / outer-deg 改成 60.0 / 90.0：锥开到接近半球，画面跟 point
+;;     那节差不多——点光就是"锥开到 180° 的聚光"（见 11.4）。
+;;   · orbit-speed 从 0.25 改成 0.8：镜头转快，光锥扫得快，更容易看清它是怎么扫的。
+;; ============================================================</code></pre>
+      </div>
+
+      <h2 id="s11-exercise">试试看</h2>
+
+      <ol class="exercise">
+        <li>点光里把 <code>k-quadratic</code> 从 <code>0.032</code> 改成 <code>0.007</code>（片元里就是 <code>u-kq</code>）：远段掉得慢多了，最远那个立方体明显抬亮——对照图 11-1 那条曲线，等于把右半段的陡坡压平。</li>
+        <li>点光里把 <code>k-constant</code> 从 <code>1.0</code> 改成 <code>0.0</code>：分母失去保底，<code>d</code> 很小时 <code>attenuation</code> 冲过 1，最近的立方体直接爆亮成一片白。这就是 <code>kc</code> 非要留在 1.0 的原因。</li>
+        <li>聚光里把 <code>smoothstep</code> 换成手写的硬阶跃，锥边立刻从软变硬：<br><code>(float intensity (if (&gt; cos-theta u-cos-inner) 1.0 0.0))</code><br>（片元语句里的 <code>if</code> 不可用，那位置留给三元表达式；<code>(if 条件 甲 乙)</code> 在<b>表达式位</b>才写成 <code>cond ? 甲 : 乙</code>，正好够这一行用。）</li>
+        <li>聚光里把锥角改小：<code>inner-deg</code> / <code>outer-deg</code> 从 <code>12.5</code> / <code>17.5</code> 改成 <code>5.0</code> / <code>8.0</code>。光斑收窄成一小块，画面上只剩正中那个立方体亮着；反过来改成 <code>60.0</code> / <code>90.0</code>，画面就慢慢变成点光那节的样子——锥开到 180° 就是点光（11.4）。</li>
+        <li>方向光里把 <code>light-dir</code> 从 <code>(vec-3 -0.2 -1.0 -0.3)</code> 改成 <code>(vec-3 0.0 -1.0 0.0)</code>（正午的太阳，光垂直往下）：四个立方体只剩顶面亮，前面和侧面一起暗下去，只剩一点环境光。同一个面亮不亮，全看它朝哪——这就是方向光里唯一的变量。</li>
+      </ol>
+
+      <h2 id="s11-summary">小结</h2>
+
+      <table class="spec">
+        <thead>
+          <tr>
+            <th>光源</th>
+            <th>有位置？</th>
+            <th>有方向？</th>
+            <th>有衰减？</th>
+            <th>有锥？</th>
+            <th>公式里多出来的那一项</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>方向光 directional</td>
+            <td>否（在无穷远）</td>
+            <td>是（常量）</td>
+            <td>否</td>
+            <td>否</td>
+            <td>没有；<code>light-dir = normalize(-u-light-dir)</code>，距离不进公式</td>
+          </tr>
+          <tr>
+            <td>点光 point</td>
+            <td>是</td>
+            <td>是（逐片元算）</td>
+            <td>是</td>
+            <td>否</td>
+            <td><code>attenuation = 1 / (kc + kl·d + kq·d²)</code>，乘在 diffuse 与 specular 上</td>
+          </tr>
+          <tr>
+            <td>聚光 spot</td>
+            <td>是</td>
+            <td>是（锥轴）</td>
+            <td>是</td>
+            <td>是</td>
+            <td><code>intensity = smoothstep(cosOuter, cosInner, cosθ)</code>，与 attenuation 一起乘</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="note key">
+        <p><b>复习</b><a href="../review/03-lighting/index.html">复习 03 · 光照：CPU 还是 GPU</a>。读完 08–11，建议做一遍光照复习：同一个 Phong 公式，逐顶点、逐片元、离线烘焙三种计算位置各有什么代价。</p>
+      </div>
+
+    </main>
+
+    <nav class="toc">
+      <b>本节目录</b>
+      <ol>
+        <li><a href="#s11-1">11.1 方向光：只有方向，没有位置</a></li>
+        <li><a href="#s11-2">11.2 点光与衰减：位置回来了，亮度开始随距离掉</a></li>
+        <li><a href="#s11-3">11.3 聚光：点光加一个锥</a></li>
+        <li><a href="#s11-4">11.4 三种光的包含关系</a></li>
+        <li><a href="#s11-code">完整代码</a></li>
+        <li><a href="#s11-exercise">试试看</a></li>
+        <li><a href="#s11-summary">小结</a></li>
+      </ol>
+    </nav>
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="../10-lighting-maps/index.html">← 10 光照贴图</a>
+    <a class="next" href="../12-multiple-lights/index.html">12 多光源 →</a>
+  </nav>
+
+  <footer class="site-footer">
+    <p>本教程参照 learnopengl.com 的章节节奏，代码用 racket-shader 写。纯静态站，源码可在浏览器里直接查看。</p>
+  </footer>
+
+</div>
+</body>
+</html>

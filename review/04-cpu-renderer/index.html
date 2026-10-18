@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>复习 04 · 用 CPU 走一遍渲染管线 — study-opengl</title>
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/highlight.js" defer></script>
+</head>
+<body>
+<div class="page">
+
+  <header class="site-header">
+    <a class="site-title" href="../../index.html">study-opengl</a>
+    <nav class="crumbs"><a href="../../index.html">课程</a> / <span>复习 04 · 用 CPU 走一遍渲染管线</span></nav>
+  </header>
+
+  <div class="layout">
+    <main class="content">
+
+      <h1>复习 04 · 用 CPU 走一遍渲染管线</h1>
+
+      <p class="goal">目标：不调用任何 <code>gl-*</code>，用 Racket 把 14 课的茶壶画出来。你会看到 <code>gl-draw-elements</code> 背后到底有哪几步、每步执行多少次，以及为什么其中三步要交给 GPU。</p>
+
+      <div class="run"><span class="prompt">$</span> racket review/04-cpu-renderer/cpu-raster.rkt</div>
+      <div class="run"><span class="prompt">$</span> racket review/04-cpu-renderer/cpu-raster.rkt 800 600</div>
+
+      <p>第一条命令输出 320×240 的图，第二条换成分辨率更高的 800×600。两次都会在终端打印顶点数、三角形数、片元数和分阶段耗时。</p>
+
+      <figure class="figure">
+        <img src="cpu-teapot-320x240.png" width="320" height="240"
+             alt="Racket 在 CPU 上光栅化出来的 Utah Teapot，橙色壶身，背景深蓝">
+        <figcaption class="figcaption">图 R4-1　CPU 版渲染结果：同样的茶壶、同样的 Phong 公式，没有一行 OpenGL</figcaption>
+      </figure>
+
+      <div class="note key">
+        <p><b>先记住</b>GPU 没有发明另一套图形算法。它做的是同一套公式，只是把「顶点变换」「片元着色」放到大量并行单元上，并把中间的光栅化和深度测试做进了硬件。这个脚本把那三步从硬件里拿出来，写成你能读的 Racket 代码。</p>
+      </div>
+
+      <div class="note">
+        <p><b>读法</b>本页 Racket 代码里的 <code>vec-3</code> / <code>vec-4</code> / <code>vx</code> / <code>vdot</code> 来自 <code>#lang glsl</code>（racket-shader），<b>不是</b> <code>racket/math</code>；<code>racket/math</code> 只提供 <code>degrees->radians</code>。生成 GLSL 时它们才写成 <code>vec3</code> / <code>vec4</code>。所以下面会同时出现两种拼写：GLSL 原文用 <code>vec4</code>，Racket 代码用 <code>vec-4</code>，指的是同一个四维向量。</p>
+      </div>
+
+      <h2 id="r4-1">R4.1 五步，一步都不少</h2>
+
+      <p>一次 <code>gl-draw-elements</code> 在 GPU 上会依次经过下面五步。你在 OpenGL 里只写第 1 步和第 5 步；中间三步是固定管线，看不见，但确实在跑。</p>
+
+      <table class="spec">
+        <thead><tr><th>步骤</th><th>CPU 版函数</th><th>GPU 里是谁</th><th>执行次数（320×240）</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>1. 顶点变换</td>
+            <td><code>vertex-shader</code></td>
+            <td>顶点着色器（你写的）</td>
+            <td>1202 次，每顶点一次</td>
+          </tr>
+          <tr>
+            <td>2. 图元装配</td>
+            <td><code>rasterize-triangle!</code> 的循环</td>
+            <td>固定管线</td>
+            <td>2256 个三角形</td>
+          </tr>
+          <tr>
+            <td>3. 光栅化</td>
+            <td><code>rasterize-triangle!</code> 里的包围盒 + 边函数</td>
+            <td>光栅化单元</td>
+            <td>按三角形覆盖的像素数</td>
+          </tr>
+          <tr>
+            <td>4. 深度测试</td>
+            <td><code>depth-buffer</code> 比较</td>
+            <td>深度测试单元</td>
+            <td>10355 个候选片元</td>
+          </tr>
+          <tr>
+            <td>5. 片元着色</td>
+            <td><code>fragment-shader</code></td>
+            <td>片元着色器（你写的）</td>
+            <td>9982 次，每个通过测试的片元一次</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>GPU 把 1 和 5 暴露给你，因为这两步「每个顶点 / 每个像素要算什么」因场景而异；2–4 对所有三角形都一样，所以做成固定硬件。CPU 版没有这个分工，五步都得自己写。</p>
+
+      <h2 id="r4-2">R4.2 顶点变换：1202 次</h2>
+
+      <p>14 课的 <code>model-vert</code> 里，三行就干完了（这一段是 GLSL 原文，所以写 <code>vec4</code>）：</p>
+
+      <div class="code">
+        <div class="code-title">14-model-loading/model-loading.rkt（顶点着色器）<a class="srclink" href="../../code.html?f=14-model-loading/model-loading.rkt">源码 ↗</a></div>
+        <pre><code class="lang-glsl">v-normal   = u-normal-matrix * normal;
+v-frag-pos = (u-model * vec4(pos, 1.0)).xyz;
+gl_Position = u-proj * u-view * u-model * vec4(pos, 1.0);</code></pre>
+      </div>
+
+      <p>CPU 版逐字对应（这一段是 Racket，所以写 <code>vec-4</code>）：</p>
+
+      <div class="code">
+        <div class="code-title">review/04-cpu-renderer/cpu-raster.rkt（顶点着色器）<a class="srclink" href="../../code.html?f=review/04-cpu-renderer/cpu-raster.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">(define (vertex-shader v)
+  (define p (vec-4 (vx (obj-vertex-pos v))
+                   (vy (obj-vertex-pos v))
+                   (vz (obj-vertex-pos v))
+                   1.0))
+  (define world4 (mat4-mul-vec model p))
+  (define clip (mat4-mul-vec mvp p))
+  (define w (vw clip))
+  (v-out clip
+         (vec-3 (/ (vx clip) w) (/ (vy clip) w) (/ (vz clip) w))
+         (vec-3 (vx world4) (vy world4) (vz world4))
+         (mat3-mul-vec normal-matrix (obj-vertex-normal v))))</code></pre>
+      </div>
+
+      <p>唯一的差别是：CPU 版先把 <code>proj · view · model</code> 乘成一个 <code>mvp</code>，每个顶点只乘一次；GPU 版把三个矩阵作为 uniform 传进去，每个顶点乘三次。数学一样，区别是「矩阵乘法做几次、在哪做」——数据流决策，不是算法决策。</p>
+
+      <p>1202 个顶点串行跑完只要约 0.005 秒。顶点变换本身并不贵，贵的是后面的片元。</p>
+
+      <h2 id="r4-3">R4.3 光栅化：GPU 替你做的第一件大事</h2>
+
+      <p>顶点变换之后，你只有三个屏幕坐标。要回答「哪些像素属于这个三角形」，CPU 版用<strong>边函数 + 重心坐标</strong>：</p>
+
+      <div class="code">
+        <div class="code-title">review/04-cpu-renderer/cpu-raster.rkt（光栅化核心）<a class="srclink" href="../../code.html?f=review/04-cpu-renderer/cpu-raster.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">(define area (edge x0 y0 x1 y1 x2 y2))
+
+(for* ([y (in-range min-y (add1 max-y))]
+       [x (in-range min-x (add1 max-x))])
+  (define px (+ x 0.5))
+  (define py (+ y 0.5))
+
+  ;; 重心坐标 = 三个边函数 / 总面积；三个都 ≥ 0 就在三角形内
+  (define b0 (/ (edge x1 y1 x2 y2 px py) area))
+  (define b1 (/ (edge x2 y2 x0 y0 px py) area))
+  (define b2 (/ (edge x0 y0 x1 y1 px py) area))
+
+  (when (and (>= b0 0.0) (>= b1 0.0) (>= b2 0.0))
+    ;; 深度：z_ndc 在屏幕空间是线性的，直接插值
+    (define z (+ (* b0 z0) (* b1 z1) (* b2 z2)))
+    (when (&lt; z (vector-ref depth-buffer dx))
+      (vector-set! depth-buffer dx z)
+      ...)))</code></pre>
+      </div>
+
+      <p>这段代码里藏着两个平时完全看不见、但 GPU 一直在做的事。</p>
+
+      <p><b>第一，透视校正插值。</b>屏幕上的重心坐标不能直接用来插值世界坐标和法线，因为远处的顶点在屏幕上被压缩了。正确做法是先插值 <code>attr/w</code> 和 <code>1/w</code>，再除掉 <code>1/w</code>：</p>
+
+      <div class="code">
+        <div class="code-title">review/04-cpu-renderer/cpu-raster.rkt（透视校正）<a class="srclink" href="../../code.html?f=review/04-cpu-renderer/cpu-raster.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">(define inv-w (+ (* b0 inv-w0) (* b1 inv-w1) (* b2 inv-w2)))
+(define (f x0 x1 x2)
+  (/ (+ (* b0 inv-w0 x0) (* b1 inv-w1 x1) (* b2 inv-w2 x2)) inv-w))</code></pre>
+      </div>
+
+      <p>GPU 对每个 varying 自动做这件事，所以你写 <code>v-frag-pos</code>、<code>v-normal</code> 时不需要关心 <code>w</code>。</p>
+
+      <p><b>第二，深度测试。</b>同一个像素可能被多个三角形覆盖（overdraw）。<code>depth-buffer</code> 记下当前最近的值，只有更近的片元才能写颜色。GPU 上对应 <code>gl-enable gl-depth-test</code> 和 <code>gl-depth-func</code>，你只设状态，不写循环。</p>
+
+      <div class="note">
+        <p><b>为什么 2–4 步不交给你写</b>这三个步骤的规则对所有三角形、所有场景都一样，做成固定硬件更快也更省心。你能调的只有状态：<code>gl-cull-face</code>（背面剔除）、<code>gl-depth-func</code>（深度比较方式）、<code>gl-viewport</code>（映射到哪块像素）。</p>
+      </div>
+
+      <h2 id="r4-4">R4.4 片元着色器：同一行 Phong</h2>
+
+      <p>通过深度测试的片元，交给和 14 课一模一样的公式：</p>
+
+      <div class="code">
+        <div class="code-title">review/04-cpu-renderer/cpu-raster.rkt（片元着色器）<a class="srclink" href="../../code.html?f=review/04-cpu-renderer/cpu-raster.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">(define (fragment-shader frag-pos normal)
+  (define norm (vnormalize normal))
+  (define light-dir (vnormalize (vsub light-pos frag-pos)))
+  (define view-dir (vnormalize (vsub view-pos frag-pos)))
+  (define reflect-dir (vreflect (vneg light-dir) norm))
+
+  (define ambient 0.15)
+  (define diff (max (vdot norm light-dir) 0.0))
+  (define spec (* (expt (max (vdot view-dir reflect-dir) 0.0) 32.0) 0.4))
+  (define lit (* (+ ambient diff spec) 1.0))
+  (vmul (vmul light-color lit) object-color))</code></pre>
+      </div>
+
+      <p>把这段和 09、14 课的 GLSL 并排看，除了语法，没有任何区别。光照不是「GPU 的能力」，它就是一个逐像素的函数；GPU 只是能同时跑很多份。</p>
+
+      <h2 id="r4-5">R4.5 数字：CPU 到底算了多少</h2>
+
+      <p>本机一次实测（Racket，单线程）：</p>
+
+      <table class="spec">
+        <thead><tr><th></th><th>320×240</th><th>800×600</th><th>变化</th></tr></thead>
+        <tbody>
+          <tr><td>顶点变换</td><td>1202 次</td><td>1202 次</td><td>不变</td></tr>
+          <tr><td>三角形（剔除后）</td><td>1042</td><td>1042</td><td>不变</td></tr>
+          <tr><td>覆盖像素</td><td>9,982</td><td>62,798</td><td>×6.3</td></tr>
+          <tr><td>候选片元（含 overdraw）</td><td>10,355</td><td>65,147</td><td>×6.3</td></tr>
+          <tr><td>光栅化 + 着色</td><td>约 0.08 s</td><td>约 0.47 s</td><td>×5.9</td></tr>
+          <tr><td>解析 OBJ</td><td>约 0.06 s</td><td>约 0.06 s</td><td>不变</td></tr>
+          <tr><td>合计</td><td>约 0.2 s</td><td>约 0.7 s</td><td>×3.8</td></tr>
+        </tbody>
+      </table>
+
+      <p>像素数涨了 6.25 倍，光栅化阶段也涨了约 6 倍；顶点变换和三角形数完全不动。这就是渲染的成本结构：<b>顶点是「一次」的成本，片元是「每像素」的成本</b>。分辨率越高，片元越占主导。</p>
+
+      <p>GPU 的优势正好落在这条曲线上：1202 次顶点变换串行还好；6 万多个片元、每个都跑一遍 Phong，串行要 0.47 秒，而 GPU 可以同时跑几千个。分辨率越高、灯越多，差距越大。</p>
+
+      <div class="note warn">
+        <p><b>别推成「GPU 一定快」</b>这个场景 CPU 版 0.7 秒也能接受。小场景、一次性计算、需要把结果读回 CPU 的场合，CPU 反而更简单。GPU 赢在「片元数量大，而且每帧都要重算」。</p>
+      </div>
+
+      <h2 id="r4-6">R4.6 GPU 版本少写了什么</h2>
+
+      <table class="spec">
+        <thead><tr><th>CPU 版要自己写</th><th>GPU 版交给谁</th></tr></thead>
+        <tbody>
+          <tr><td>遍历 2256 个三角形</td><td>一次 <code>gl-draw-elements</code>，图元装配由管线完成</td></tr>
+          <tr><td>包围盒、边函数、重心坐标</td><td>光栅化单元</td></tr>
+          <tr><td><code>depth-buffer</code> 的比较和写回</td><td>深度测试单元（<code>gl-enable gl-depth-test</code>）</td></tr>
+          <tr><td>逐个像素调用片元函数</td><td>并行调度，像素之间互不依赖</td></tr>
+          <tr><td>把颜色写进数组再存盘</td><td>直接写 framebuffer，再 <code>swap-gl-buffers</code></td></tr>
+        </tbody>
+      </table>
+
+      <p>14 课的 <code>draw</code> 里真正启动计算的只有最后一行：</p>
+
+      <div class="code">
+        <div class="code-title">14-model-loading/model-loading.rkt（draw）<a class="srclink" href="../../code.html?f=14-model-loading/model-loading.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">(gl-draw-elements gl-triangles model-index-count gl-unsigned-short 0)</code></pre>
+      </div>
+
+      <p>这一行之前的所有 <code>gl-*</code> 都是「传数据」和「设状态」；这一行之后，上面五步在 GPU 上跑完。R1 把 API 分成三类，这里看到的是同一个结论的具体版本。</p>
+
+      <h2 id="r4-7">R4.7 这个渲染器没做什么</h2>
+
+      <p>为了把注意力留在管线上，CPU 版省略了不少东西：</p>
+
+      <ul>
+        <li><b>近平面裁剪</b>：只跳过 <code>w ≤ 0</code> 的三角形；GPU 会真的把跨过近平面的三角形切开。</li>
+        <li><b>纹理</b>：没有 UV、没有采样、没有 mipmap；04 和 10 课的内容都在片元之后。</li>
+        <li><b>抗锯齿</b>：每个像素只取中心点，边缘是硬的；GPU 可以用 MSAA。</li>
+        <li><b>多光源、阴影、混合、gamma</b>：都还没加。</li>
+        <li><b>性能</b>：单线程、逐像素函数调用，比 GPU 慢几个数量级。</li>
+      </ul>
+
+      <p>缺的每一项，在 GPU 上通常只是多一行状态或一个 <code>gl-enable</code>；在 CPU 上却要自己补一段实现。这就是为什么「管线机制」不适合从 CPU 讲起——CPU 版适合解释<b>公式</b>和<b>成本</b>，不适合替代 OpenGL。</p>
+
+      <div class="note key">
+        <p><b>一句话</b>CPU 版和 GPU 版算的是同一套公式。差别只有两个：<b>并行度</b>（1202 次顶点、6 万次片元，是串行还是同时跑）和<b>固定管线</b>（光栅化、深度测试由谁实现）。把这两点看清，<code>gl-*</code> 就只剩「传数据、设状态、启动计算」三类。</p>
+      </div>
+
+      <p>想对照 GPU 侧的完整代码，去 <a class="filelink" href="../../14-model-loading/index.html">14 模型加载</a>；想先补矩阵链路，回 <a class="filelink" href="../02-matrices/index.html">R2 矩阵与计算位置</a>；想补光照公式，回 <a class="filelink" href="../03-lighting/index.html">R3 光照</a>。</p>
+
+    </main>
+
+    <nav class="toc">
+      <b>本节目录</b>
+      <ol>
+        <li><a href="#r4-1">R4.1 五步，一步都不少</a></li>
+        <li><a href="#r4-2">R4.2 顶点变换：1202 次</a></li>
+        <li><a href="#r4-3">R4.3 光栅化</a></li>
+        <li><a href="#r4-4">R4.4 片元着色器</a></li>
+        <li><a href="#r4-5">R4.5 数字：算了多少</a></li>
+        <li><a href="#r4-6">R4.6 GPU 少写了什么</a></li>
+        <li><a href="#r4-7">R4.7 没做什么</a></li>
+      </ol>
+    </nav>
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="../../14-model-loading/index.html">← 14 模型加载</a>
+    <a class="next" href="../../index.html">回到目录 →</a>
+  </nav>
+
+  <footer class="site-footer">
+    <p>本教程参照 learnopengl.com 的章节节奏，代码用 racket-shader 写。纯静态站，源码可在浏览器里直接查看。</p>
+  </footer>
+
+</div>
+</body>
+</html>

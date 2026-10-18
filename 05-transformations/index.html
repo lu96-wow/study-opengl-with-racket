@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>05 · 变换 — study-opengl</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/highlight.js" defer></script>
+</head>
+<body>
+<div class="page">
+
+  <header class="site-header">
+    <a class="site-title" href="../index.html">study-opengl</a>
+    <nav class="crumbs"><a href="../index.html">课程</a> / <span>05 · 变换</span></nav>
+  </header>
+
+  <div class="layout">
+    <main class="content">
+
+      <h1>变换</h1>
+
+      <p class="goal">本节目标：给 04 课那张贴了棋盘的矩形乘上平移、旋转、缩放三个矩阵，让它绕自己的中心自转、大小来回脉动，整体还偏在屏幕右下角。跑起来应该看到一块棋盘方块在右下角原地转，一边转一边一涨一缩。</p>
+
+      <div class="run"><span class="prompt">$</span> racket 05-transformations/transform.rkt</div>
+
+            <div class="note key">
+        <p><b>计算位置</b>矩阵乘法在 CPU（Racket）里算，顶点变换在 GPU 顶点着色器里算。也可以 CPU 先把顶点乘好再上传；本教程把矩阵作为 uniform 传上去，让 GPU 对每个顶点并行乘。</p>
+      </div>
+
+<h2 id="s5-1">5.1 变换就是乘矩阵</h2>
+
+      <p>顶点位置就是两个数。要让矩形动起来，最直接的想法是逐顶点改数值：<code>x</code> 加 0.5、绕中心转一个角度。但这样每个顶点都要算一遍三角函数，而顶点数动辄几万；更要紧的是每加一种效果就得再改一遍顶点数据的生成逻辑。</p>
+
+      <p>OpenGL 的做法是：把「怎么动」写成一个 4×4 矩阵，顶点位置左乘它。一次乘法，平移、旋转、缩放全都在里面了，而且这个矩阵是 uniform——整块矩形共用一份，顶点着色器对每个顶点各乘一次，于是整个矩形一起动。</p>
+
+      <div class="code">
+        <div class="code-title">05-transformations/transform.rkt：多了一个 u-transform，位置乘上它<a class="srclink" href="../code.html?f=05-transformations/transform.rkt">源码 ↗</a></div>
+<pre><code class="lang-racket">(define vert-src
+  (glsl (version 330 core)
+        (layout (location 0) in vec-2 a-pos)     ; 属性 0：位置
+        (layout (location 1) in vec-2 a-uv)      ; 属性 1：UV 坐标
+        (uniform mat-4 u-transform)              ; 变换矩阵：平移·旋转·缩放
+        (out vec-2 v-uv)
+        (define (main) void
+          ;; 位置先补一个 z=0、w=1，再乘矩阵；w=1 是给平移留的位置。
+          (set! gl-position (* u-transform (vec-4 a-pos 0.0 1.0)))
+          (set! v-uv a-uv))))
+</code></pre>
+      </div>
+
+      <p><code>(vec-4 a-pos 0.0 1.0)</code> 把 <code>vec-2</code> 补成 <code>vec-4</code>：z 填 0（本课全是平面图形），w 填 1。w 这个 1 不是随便填的，它就是<strong>齐次坐标</strong>：正是因为点带着 <code>w=1</code>，平移才能也写成乘法。</p>
+
+      <p>为什么平移非要靠一个 4×4 呢？3×3 矩阵能表达缩放和旋转，但表达不了平移——平移是「加一个常数」，不是「乘一个数」。齐次坐标的做法是把点从 <code>(x, y)</code> 升到 <code>(x, y, 1)</code>，多出来的这一维在矩阵里专门负责「加常数」。代价是多一行一列，好处是所有变换都变成同一种东西：乘矩阵。可以连乘成一个矩阵、可以求逆、可以按任意顺序叠加。</p>
+
+      <p>这一节剩下的活就是：认识平移、旋转、缩放这三个矩阵长什么样，然后把它们乘成一个 M，再上传给 <code>u-transform</code>。</p>
+
+      <h2 id="s5-2">5.2 平移矩阵</h2>
+
+      <p>平移矩阵里几乎什么都没干：前 3 列是单位阵，只有第 4 列（col3）填了三个位移量 tx、ty、tz。</p>
+
+      <figure class="figure">
+        <svg viewBox="0 0 660 260" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>平移矩阵 T 的 4×4 格子：前 3 列是单位阵，位移 tx/ty/tz 只出现在第 4 列，右下角的 1 是齐次坐标的 w</title>
+          <defs>
+            <marker id="tf1-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+            </marker>
+          </defs>
+
+          <text x="330" y="26" text-anchor="middle" font-size="13" fill="var(--muted)">平移矩阵 T：4 列 × 4 行，每列一个 vec-4；位移只长在第 4 列</text>
+
+          <text x="92" y="56" text-anchor="middle" font-size="12" fill="var(--muted)">col0</text>
+          <text x="136" y="56" text-anchor="middle" font-size="12" fill="var(--muted)">col1</text>
+          <text x="180" y="56" text-anchor="middle" font-size="12" fill="var(--muted)">col2</text>
+          <text x="224" y="56" text-anchor="middle" font-size="12" fill="var(--accent)">col3</text>
+
+          <rect x="70" y="64" width="44" height="44" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="114" y="64" width="44" height="44" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="158" y="64" width="44" height="44" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="202" y="64" width="44" height="44" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <rect x="70" y="108" width="44" height="44" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="114" y="108" width="44" height="44" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="158" y="108" width="44" height="44" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="202" y="108" width="44" height="44" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <rect x="70" y="152" width="44" height="44" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="114" y="152" width="44" height="44" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="158" y="152" width="44" height="44" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="202" y="152" width="44" height="44" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <rect x="70" y="196" width="44" height="44" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="114" y="196" width="44" height="44" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="158" y="196" width="44" height="44" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="202" y="196" width="44" height="44" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+
+          <text x="92" y="91" text-anchor="middle" font-size="14" fill="var(--fg)">1</text>
+          <text x="136" y="91" text-anchor="middle" font-size="14" fill="var(--fg)">0</text>
+          <text x="180" y="91" text-anchor="middle" font-size="14" fill="var(--fg)">0</text>
+          <text x="224" y="91" text-anchor="middle" font-size="14" fill="var(--accent)">tx</text>
+          <text x="92" y="135" text-anchor="middle" font-size="14" fill="var(--fg)">0</text>
+          <text x="136" y="135" text-anchor="middle" font-size="14" fill="var(--fg)">1</text>
+          <text x="180" y="135" text-anchor="middle" font-size="14" fill="var(--fg)">0</text>
+          <text x="224" y="135" text-anchor="middle" font-size="14" fill="var(--accent)">ty</text>
+          <text x="92" y="179" text-anchor="middle" font-size="14" fill="var(--fg)">0</text>
+          <text x="136" y="179" text-anchor="middle" font-size="14" fill="var(--fg)">0</text>
+          <text x="180" y="179" text-anchor="middle" font-size="14" fill="var(--fg)">1</text>
+          <text x="224" y="179" text-anchor="middle" font-size="14" fill="var(--accent)">tz</text>
+          <text x="92" y="223" text-anchor="middle" font-size="14" fill="var(--fg)">0</text>
+          <text x="136" y="223" text-anchor="middle" font-size="14" fill="var(--fg)">0</text>
+          <text x="180" y="223" text-anchor="middle" font-size="14" fill="var(--fg)">0</text>
+          <text x="224" y="223" text-anchor="middle" font-size="14" fill="var(--accent)">1</text>
+
+          <line x1="250" y1="86" x2="284" y2="104" stroke="var(--line)" stroke-width="1.5" marker-end="url(#tf1-arrow)"/>
+
+          <text x="292" y="110" font-size="13" fill="var(--fg)">前 3 列是单位阵，乘上去等于</text>
+          <text x="292" y="134" font-size="13" fill="var(--fg)">「什么都不做」；位移全靠 col3</text>
+          <text x="292" y="158" font-size="13" fill="var(--fg)">那三个数。右下角的 1 还是</text>
+          <text x="292" y="182" font-size="13" fill="var(--fg)">齐次坐标的 w。</text>
+        </svg>
+        <figcaption class="figcaption">图 5-1 平移矩阵：位移只长在第 4 列，其余是单位阵</figcaption>
+      </figure>
+
+      <p>为什么位移偏偏长在最后一列？因为算 <code>M × 点</code> 时，最后一列会去乘点的 <code>w</code>——而 <code>w</code> 正好是 1，于是这一列被原样加到位置上。<code>lib/matrix.rkt</code> 里这句话说得更干脆：<strong>列主序下位移就长在最后一列</strong>。</p>
+
+      <div class="code">
+        <div class="code-title">lib/matrix.rkt：m-translate<a class="srclink" href="../code.html?f=lib/matrix.rkt">源码 ↗</a></div>
+<pre><code class="lang-racket">;; 平移：把点 (x,y,z) 变成 (x+tx, y+ty, z+tz)，w 保持 1。
+;; 位移只体现在第 4 列（col3），前 3 列是单位阵——列主序下位移就长在最后一列。
+(define (m-translate v)
+  (mat-4 (vec-4 1.0 0.0 0.0 0.0)
+        (vec-4 0.0 1.0 0.0 0.0)
+        (vec-4 0.0 0.0 1.0 0.0)
+        (vec-4 (vx v) (vy v) (vz v) 1.0)))
+</code></pre>
+      </div>
+
+      <p>注意 <code>(mat-4 …)</code> 收的是 4 个<strong>列向量</strong>：第一个 <code>(vec-4 1.0 0.0 0.0 0.0)</code> 是第 0 列，最后 <code>(vec-4 (vx v) (vy v) (vz v) 1.0)</code> 是第 3 列。也就是说代码里从上往下读到的，就是内存里从前往后排的——这叫列主序，和数学课本里按行写矩阵的习惯正好横过来。5.6 上传时会用到这一点。</p>
+
+      <h2 id="s5-3">5.3 旋转矩阵</h2>
+
+      <p>旋转矩阵里绝大部分是 0，非零的 cos / sin 挤在某个 2×2 角落上：绕哪个轴转，就是哪两个分量在那个平面里转，第三个分量原样不动。三个轴并排看，cos / sin 的位置一眼就能对出来。</p>
+
+      <figure class="figure">
+        <svg viewBox="0 0 660 300" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>旋转矩阵的 4×4 格子并排：rotate-x 的 cos/sin 在 y、z 两列，rotate-y 在 z、x 两列，rotate-z 在 x、y 两列；空白格都是 0</title>
+
+          <text x="330" y="26" text-anchor="middle" font-size="13" fill="var(--muted)">三个旋转矩阵：cos / sin 出现在「转轴之外的另两个分量」那一小块上（空白格都是 0）</text>
+
+          <text x="96" y="48" text-anchor="middle" font-size="12" fill="var(--accent)">rotate-x</text>
+          <text x="330" y="48" text-anchor="middle" font-size="12" fill="var(--accent)">rotate-y</text>
+          <text x="564" y="48" text-anchor="middle" font-size="12" fill="var(--accent)">rotate-z</text>
+
+          <rect x="24" y="76" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="60" y="76" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="96" y="76" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="132" y="76" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="24" y="112" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="60" y="112" width="36" height="36" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <rect x="96" y="112" width="36" height="36" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <rect x="132" y="112" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="24" y="148" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="60" y="148" width="36" height="36" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <rect x="96" y="148" width="36" height="36" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <rect x="132" y="148" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="24" y="184" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="60" y="184" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="96" y="184" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="132" y="184" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+
+          <text x="42" y="99" text-anchor="middle" font-size="12" fill="var(--fg)">1</text>
+          <text x="78" y="135" text-anchor="middle" font-size="11" fill="var(--accent)">cos</text>
+          <text x="114" y="135" text-anchor="middle" font-size="11" fill="var(--accent)">-sin</text>
+          <text x="78" y="171" text-anchor="middle" font-size="11" fill="var(--accent)">sin</text>
+          <text x="114" y="171" text-anchor="middle" font-size="11" fill="var(--accent)">cos</text>
+          <text x="150" y="207" text-anchor="middle" font-size="12" fill="var(--fg)">1</text>
+
+          <rect x="258" y="76" width="36" height="36" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <rect x="294" y="76" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="330" y="76" width="36" height="36" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <rect x="366" y="76" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="258" y="112" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="294" y="112" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="330" y="112" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="366" y="112" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="258" y="148" width="36" height="36" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <rect x="294" y="148" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="330" y="148" width="36" height="36" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <rect x="366" y="148" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="258" y="184" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="294" y="184" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="330" y="184" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="366" y="184" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+
+          <text x="276" y="99" text-anchor="middle" font-size="11" fill="var(--accent)">cos</text>
+          <text x="312" y="135" text-anchor="middle" font-size="12" fill="var(--fg)">1</text>
+          <text x="348" y="99" text-anchor="middle" font-size="11" fill="var(--accent)">sin</text>
+          <text x="276" y="171" text-anchor="middle" font-size="11" fill="var(--accent)">-sin</text>
+          <text x="348" y="171" text-anchor="middle" font-size="11" fill="var(--accent)">cos</text>
+          <text x="384" y="207" text-anchor="middle" font-size="12" fill="var(--fg)">1</text>
+
+          <rect x="492" y="76" width="36" height="36" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <rect x="528" y="76" width="36" height="36" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <rect x="564" y="76" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="600" y="76" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="492" y="112" width="36" height="36" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <rect x="528" y="112" width="36" height="36" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <rect x="564" y="112" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="600" y="112" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="492" y="148" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="528" y="148" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="564" y="148" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="600" y="148" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="492" y="184" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="528" y="184" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="564" y="184" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="600" y="184" width="36" height="36" fill="none" stroke="var(--line)" stroke-width="1"/>
+
+          <text x="510" y="99" text-anchor="middle" font-size="11" fill="var(--accent)">cos</text>
+          <text x="546" y="99" text-anchor="middle" font-size="11" fill="var(--accent)">-sin</text>
+          <text x="510" y="135" text-anchor="middle" font-size="11" fill="var(--accent)">sin</text>
+          <text x="546" y="135" text-anchor="middle" font-size="11" fill="var(--accent)">cos</text>
+          <text x="582" y="171" text-anchor="middle" font-size="12" fill="var(--fg)">1</text>
+          <text x="618" y="207" text-anchor="middle" font-size="12" fill="var(--fg)">1</text>
+
+          <text x="96" y="242" text-anchor="middle" font-size="13" fill="var(--muted)">y、z 在平面里转</text>
+          <text x="96" y="262" text-anchor="middle" font-size="13" fill="var(--fg)">x 不动</text>
+          <text x="330" y="242" text-anchor="middle" font-size="13" fill="var(--muted)">z、x 在平面里转</text>
+          <text x="330" y="262" text-anchor="middle" font-size="13" fill="var(--fg)">y 不动</text>
+          <text x="564" y="242" text-anchor="middle" font-size="13" fill="var(--muted)">x、y 在平面里转</text>
+          <text x="564" y="262" text-anchor="middle" font-size="13" fill="var(--fg)">z 不动</text>
+
+          <text x="330" y="290" text-anchor="middle" font-size="13" fill="var(--muted)">右手定则：+x 转向 +y、+y 转向 +z、+z 转向 +x（角度一律弧度）</text>
+        </svg>
+        <figcaption class="figcaption">图 5-2 绕三个轴的旋转矩阵：cos / sin 只出现在「转轴之外」的那两个分量上</figcaption>
+      </figure>
+
+      <p>方向按右手定则定：<strong>+x 转向 +y、+y 转向 +z、+z 转向 +x</strong>。换个说法——拇指指着转轴的正方向，四指卷过去的方向就是正向。本课绕 z 轴转，那就是屏幕平面里 +x 转向 +y，看着是逆时针。</p>
+
+      <p>角度用<strong>弧度</strong>，不是度。本课偷懒把秒数直接当角度用（t 秒 = t 弧度），所以大约 6.28 秒转一圈。</p>
+
+      <div class="code">
+        <div class="code-title">lib/matrix.rkt：m-rotate-z<a class="srclink" href="../code.html?f=lib/matrix.rkt">源码 ↗</a></div>
+<pre><code class="lang-racket">;; 绕 Z 轴右手旋转 a 弧度：x、y 两个分量在 (x,y) 平面里转，z 不动。
+;; +x 转向 +y——就是我们纸面上看的逆时针。
+(define (m-rotate-z a)
+  (define c (cos a))
+  (define s (sin a))
+  (mat-4 (vec-4 c s 0.0 0.0)
+        (vec-4 (- s) c 0.0 0.0)
+        (vec-4 0.0 0.0 1.0 0.0)
+        (vec-4 0.0 0.0 0.0 1.0)))
+</code></pre>
+      </div>
+
+      <p>写的时候留个心：col0 是 <code>(vec-4 c s 0.0 0.0)</code>，sin 在第二个分量上，看着和数学课本里的第一行 <code>(c, -s, 0, 0)</code> 对不上。这正是列主序——数学里的「第 1 行」被拆成了每一列的第 1 个分量。对着图 5-2 的 rotate-z 格子读一遍就不会被绕进去。</p>
+
+      <h2 id="s5-4">5.4 缩放矩阵</h2>
+
+      <p>缩放最简单：对角线上放 sx、sy、sz，其余全是 0。sx 填 2 就是 x 方向拉长一倍，填 0.5 就是压扁一半，填负数还能翻转。</p>
+
+      <figure class="figure">
+        <svg viewBox="0 0 660 250" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>缩放矩阵 S 的 4×4 格子：对角线上依次是 sx、sy、sz 和齐次坐标的 1，其余都是 0</title>
+          <defs>
+            <marker id="tf3-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+            </marker>
+          </defs>
+
+          <text x="330" y="26" text-anchor="middle" font-size="13" fill="var(--muted)">缩放矩阵 S：对角线上是三个倍数，其余全是 0</text>
+
+          <text x="90" y="52" text-anchor="middle" font-size="12" fill="var(--muted)">col0</text>
+          <text x="130" y="52" text-anchor="middle" font-size="12" fill="var(--muted)">col1</text>
+          <text x="170" y="52" text-anchor="middle" font-size="12" fill="var(--muted)">col2</text>
+          <text x="210" y="52" text-anchor="middle" font-size="12" fill="var(--muted)">col3</text>
+
+          <rect x="70" y="60" width="40" height="40" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <rect x="110" y="60" width="40" height="40" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="150" y="60" width="40" height="40" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="190" y="60" width="40" height="40" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="70" y="100" width="40" height="40" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="110" y="100" width="40" height="40" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <rect x="150" y="100" width="40" height="40" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="190" y="100" width="40" height="40" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="70" y="140" width="40" height="40" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="110" y="140" width="40" height="40" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="150" y="140" width="40" height="40" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <rect x="190" y="140" width="40" height="40" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="70" y="180" width="40" height="40" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="110" y="180" width="40" height="40" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="150" y="180" width="40" height="40" fill="none" stroke="var(--line)" stroke-width="1"/>
+          <rect x="190" y="180" width="40" height="40" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+
+          <text x="90" y="85" text-anchor="middle" font-size="14" fill="var(--accent)">sx</text>
+          <text x="130" y="125" text-anchor="middle" font-size="14" fill="var(--accent)">sy</text>
+          <text x="170" y="165" text-anchor="middle" font-size="14" fill="var(--accent)">sz</text>
+          <text x="210" y="205" text-anchor="middle" font-size="14" fill="var(--accent)">1</text>
+
+          <line x1="234" y1="78" x2="268" y2="100" stroke="var(--line)" stroke-width="1.5" marker-end="url(#tf3-arrow)"/>
+
+          <text x="276" y="106" font-size="13" fill="var(--fg)">对角线依次是 sx、sy、sz，</text>
+          <text x="276" y="130" font-size="13" fill="var(--fg)">也就是 x、y、z 各自乘的倍数；</text>
+          <text x="276" y="154" font-size="13" fill="var(--fg)">其余全为 0。右下角的 1 还是</text>
+          <text x="276" y="178" font-size="13" fill="var(--fg)">齐次坐标那个 w。</text>
+        </svg>
+        <figcaption class="figcaption">图 5-3 缩放矩阵：三个倍数摆在对角线上</figcaption>
+      </figure>
+
+      <div class="code">
+        <div class="code-title">lib/matrix.rkt：m-scale<a class="srclink" href="../code.html?f=lib/matrix.rkt">源码 ↗</a></div>
+<pre><code class="lang-racket">;; 缩放：x、y、z 各分量分别乘 sx、sy、sz，w 不变。
+;; 对角线上放三个缩放因子，其余为 0。
+(define (m-scale v)
+  (mat-4 (vec-4 (vx v) 0.0 0.0 0.0)
+        (vec-4 0.0 (vy v) 0.0 0.0)
+        (vec-4 0.0 0.0 (vz v) 0.0)
+        (vec-4 0.0 0.0 0.0 1.0)))
+</code></pre>
+      </div>
+
+      <p>本课两个方向用同一个 s，所以是等比缩放，形状不变。<code>s</code> 每帧由 <code>sin</code> 算出来，在 0.6 到 1.0 之间来回，看着就像在呼吸。第三个分量也填了 s，但画面完全没变化——原因写在「试试看」里。</p>
+
+      <h2 id="s5-5">5.5 组合与顺序</h2>
+
+      <p>三个矩阵各自好懂，但真正干活时总是叠着用：先缩放、再旋转、最后平移。做法就是把它们按顺序乘成一个矩阵：</p>
+
+      <div class="run"><span class="prompt">M =</span> T · R · S</div>
+
+      <p>注意<strong>从右往左作用</strong>：把这个 M 乘到一个点上时，最右边的 S 先碰到点，然后轮到 R，最后是 T。说白了就是：点先被缩放、再被旋转、最后被平移。</p>
+
+      <figure class="figure">
+        <svg viewBox="0 0 660 310" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>同一块矩形两种组合顺序：R 乘 T 是先平移后旋转，矩形连位置一起绕原点公转；T 乘 R 是先旋转后平移，矩形原地自转后整体摆到右下角</title>
+
+          <text x="170" y="32" text-anchor="middle" font-size="13" fill="var(--accent)">R · T：先平移，再旋转</text>
+          <text x="490" y="32" text-anchor="middle" font-size="13" fill="var(--accent)">T · R：先旋转，再平移</text>
+
+          <line x1="74" y1="190" x2="106" y2="190" stroke="var(--line)" stroke-width="1"/>
+          <line x1="90" y1="174" x2="90" y2="206" stroke="var(--line)" stroke-width="1"/>
+          <circle cx="90" cy="190" r="3" fill="var(--accent)"/>
+          <text x="82" y="176" text-anchor="end" font-size="12" fill="var(--muted)">原点</text>
+
+          <line x1="90" y1="190" x2="165" y2="190" stroke="var(--line)" stroke-width="1" stroke-dasharray="4 3"/>
+          <path d="M 165 190 A 75 75 0 0 0 143.03 136.97" fill="none" stroke="var(--muted)" stroke-width="1" stroke-dasharray="4 3"/>
+          <text x="100" y="126" font-size="12" fill="var(--muted)">绕原点公转</text>
+
+          <polygon points="210.25,190 165,144.75 119.75,190 165,235.25" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+
+          <line x1="394" y1="190" x2="426" y2="190" stroke="var(--line)" stroke-width="1"/>
+          <line x1="410" y1="174" x2="410" y2="206" stroke="var(--line)" stroke-width="1"/>
+          <circle cx="410" cy="190" r="3" fill="var(--accent)"/>
+          <text x="402" y="176" text-anchor="end" font-size="12" fill="var(--muted)">原点</text>
+
+          <line x1="410" y1="190" x2="470" y2="205" stroke="var(--line)" stroke-width="1" stroke-dasharray="4 3"/>
+          <text x="428" y="184" font-size="12" fill="var(--muted)">平移到这儿</text>
+
+          <polygon points="515.25,205 470,159.75 424.75,205 470,250.25" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+
+          <text x="170" y="274" text-anchor="middle" font-size="13" fill="var(--fg)">矩形连位置一起被转走，</text>
+          <text x="170" y="294" text-anchor="middle" font-size="13" fill="var(--fg)">看起来是绕着原点公转。</text>
+          <text x="490" y="274" text-anchor="middle" font-size="13" fill="var(--fg)">矩形只自转，转完再被整体</text>
+          <text x="490" y="294" text-anchor="middle" font-size="13" fill="var(--fg)">平移到右下角。</text>
+        </svg>
+        <figcaption class="figcaption">图 5-4 同一块矩形、同样两个矩阵，换个顺序结果就不一样</figcaption>
+      </figure>
+
+      <div class="note warn">
+        <p><b>注意</b>矩阵乘法没有交换律，<code>T·R</code> 和 <code>R·T</code> 是两个不同的矩阵，写反了效果就变。上面两张小图就是同一个矩形、同样两个矩阵、只换了乘的顺序：一边是「先平移出去、再连位置一起绕原点旋转」（公转），另一边是「先自转、再整体摆过去」。本课要的是后者，所以写 <code>T·R·S</code>。</p>
+      </div>
+
+      <h3 id="s5-5-1">5.5.1 先在 CPU 上乘一遍</h3>
+
+      <p>顺序这件事，看公式不如看数字。下面这个脚本不建窗口，只在 CPU 上拿矩形右上角 <code>(0.5, 0.5)</code> 分别乘 <code>T·R·S</code> 和 <code>R·T·S</code>。代码里的 <code>vec-4</code> / <code>mat4-mul</code> / <code>vx</code> 来自 <code>#lang glsl</code>（racket-shader），不是 <code>racket/math</code>；<code>racket/math</code> 只提供 <code>degrees->radians</code>。</p>
+
+      <div class="run"><span class="prompt">$</span> racket 05-transformations/order-check.rkt</div>
+
+      <div class="code">
+        <div class="code-title">05-transformations/order-check.rkt（摘录）<a class="srclink" href="../code.html?f=05-transformations/order-check.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">(define p (vec-4 0.5 0.5 0.0 1.0))          ; 矩形右上角
+
+(define S (m-scale (vec-3 2.0 2.0 1.0)))
+(define R (m-rotate-z (degrees->radians 90.0)))
+(define T (m-translate (vec-3 0.5 -0.5 0.0)))
+
+;; T · R · S：从右往左作用，点先被 S 缩、再被 R 转、最后被 T 移
+(define M (mat4-mul T (mat4-mul R S)))
+(define r (mat4-mul-vec M p))</code></pre>
+      </div>
+
+      <p>两种顺序每一步的坐标：</p>
+
+      <table class="spec">
+        <thead><tr><th>步骤</th><th><code>T · R · S</code></th><th><code>R · T · S</code></th></tr></thead>
+        <tbody>
+          <tr><td>起点</td><td>(0.50, 0.50)</td><td>(0.50, 0.50)</td></tr>
+          <tr><td>先缩放 S</td><td>(1.00, 1.00)</td><td>(1.00, 1.00)</td></tr>
+          <tr><td>第二步</td><td>旋转 R → (−1.00, 1.00)</td><td>平移 T → (1.50, 0.50)</td></tr>
+          <tr><td>最后一步</td><td>平移 T → <b>(−0.50, 0.50)</b></td><td>旋转 R → <b>(−0.50, 1.50)</b></td></tr>
+        </tbody>
+      </table>
+
+      <p>同一个点、同样三个矩阵，最后的 y 坐标一个 0.50、一个 1.50。差别只来自「平移是在旋转之前还是之后」——平移被旋转带着走，就是公转；平移放在最后，就是整体摆过去。</p>
+
+      <div class="note key">
+        <p><b>计算位置</b>三个矩阵相乘、以及 <code>M = T·R·S</code> 的合并，都在 CPU 上做一次；顶点着色器只对每个顶点做一次 <code>M · vec4(pos, 1.0)</code>。所以「顺序」是 CPU 侧的决定，「乘」才是 GPU 侧的工作。完整的 model/view/proj 链条见 <a class="filelink" href="../review/02-matrices/index.html">R2 矩阵与计算位置</a>。</p>
+      </div>
+
+      <h2 id="s5-6">5.6 把矩阵送上 GPU</h2>
+
+      <p>矩阵在 CPU 端算好，要通过 <code>uniform mat-4 u-transform</code> 送进去。位置在 <code>init</code> 里查一次存起来（和 03 课的 <code>u-time</code> 一样），值在 <code>draw</code> 里每帧重算再上传。</p>
+
+      <p>上传用 <code>(uniform-set! 位置 'mat-4 M)</code>。它内部选对底层的 <code>gl-uniform-matrix-4fv</code>，并把 count 固定成 1、transpose 固定成 <code>#f</code>——两个容易踩的点它替你处理了，但知道为什么仍然必要：</p>
+
+      <ul>
+        <li><strong>只送一个矩阵</strong>：底层 count 传 1；那个参数是给「一次送一批矩阵」准备的，本课只有一个。</li>
+        <li><strong>不转置</strong>：OpenGL 期待矩阵按列主序排成一条 float；而 racket-shader 的 <code>mat-4</code> 本来就是列主序（<code>mat-4</code> 收 4 个列向量），布局正好一致，所以 transpose 传 <code>#f</code>。传 <code>#t</code> 反倒会把它转错。</li>
+        <li><strong>必须在 <code>program-use</code> 之后</strong>：uniform 上传作用在「当前程序」上，和 03、04 两课的 uniform 同一个规矩。</li>
+      </ul>
+
+      <div class="code">
+        <div class="code-title">05-transformations/transform.rkt：算 M 并上传<a class="srclink" href="../code.html?f=05-transformations/transform.rkt">源码 ↗</a></div>
+<pre><code class="lang-racket">  ;; 缩放脉动：s 在 0.6..1.0 之间来回，让"大小在变"这件事一眼看得出来。
+  (define s (+ 0.8 (* 0.2 (sin (* t 2.0)))))
+
+  ;; 组合：M = T · R · S。乘法从右往左作用——点先被 S 缩、再被 R 转、最后被 T 移。
+  ;; 旋转和缩放都是"绕原点"的，而原点正好是矩形中心，所以看到的是自转 + 原地脉动；
+  ;; 最后那步平移把整个矩形挪到右下角。
+  (define M (mat4-mul (m-translate (vec-3 0.5 -0.5 0.0))
+                      (mat4-mul (m-rotate-z t)
+                                (m-scale (vec-3 s s 1.0)))))
+  ;; 上传矩阵：uniform-set! 按 'mat-4 选对 gl-uniform-matrix-4fv，并固定 count=1、transpose=#f
+  ;; （mat-4 本来就是列主序，与 OpenGL 期望的上传布局一致，不需要转置）。
+  (uniform-set! u-transform-loc 'mat-4 M)
+</code></pre>
+      </div>
+
+      <div class="note key">
+        <p><b>关键点</b>这些矩阵公式没有写在 <code>transform.rkt</code> 里，而是集中在 <a class="filelink" href="../code.html?f=lib/matrix.rkt">lib/matrix.rkt</a>：05 变换、06 坐标系、07 相机三节全都要用，与其每课各抄一遍、改一处就漂移，不如共用这一份。文件顶上还写明了三条约定——角度一律弧度、向量参数一律 <code>vec-3</code>、返回 <code>mat-4</code>；以及那个「<code>mat-4</code> 是列主序，与 OpenGL uniform 上传布局一致，uniform-set! 上传矩阵时 transpose 固定 <code>#f</code>」的前提。上面 5.6 的三要点之一，依据就在那儿。</p>
+      </div>
+
+      <h2 id="s5-code">完整代码</h2>
+
+      <p><a class="filelink" href="../code.html?f=05-transformations/transform.rkt">05-transformations/transform.rkt</a>，本课全部代码（直接 <code>racket</code> 跑）。矩阵公式在 <a class="filelink" href="../code.html?f=lib/matrix.rkt">lib/matrix.rkt</a>，可以点开对照。</p>
+
+      <div class="code">
+        <div class="code-title">05-transformations/transform.rkt<a class="srclink" href="../code.html?f=05-transformations/transform.rkt">源码 ↗</a></div>
+<pre><code class="lang-racket">#lang glsl-opengl
+;; ============================================================
+;; 05 · 变换
+;; 运行：racket 05-transformations/transform.rkt
+;; 上一课：04-textures/textures.rkt
+;; ============================================================
+;; 目标：让 04 课那张贴了棋盘的矩形动起来——绕自己的中心自转、大小来回脉动，
+;; 整体还偏在屏幕右下角。这三件事其实就是三个矩阵：平移 T、旋转 R、缩放 S。
+;; 先乘成一个 M，再在顶点着色器里乘到每个顶点上：
+;;   gl-position = M * vec-4(a-pos, 0.0, 1.0)
+;; 矩阵公式在 lib/matrix.rkt 里（05/06/07 三节共用一份），这里只管用。
+
+(require racket/class
+         racket/gui
+         "../lib/window.rkt"
+         "../lib/matrix.rkt")
+
+;; ------------------------------------------------------------
+;; 一、棋盘纹理（同 04 课：代码生成一张棋盘，不依赖图片文件）
+;; ------------------------------------------------------------
+;; OpenGL 要的是"一条连续的 RGBA 字节流"（每像素 4 个字节，0-255）。
+;; 这里画一张 size×size 的棋盘：每个 cell×cell 的方块在两种颜色之间交替。
+(define tex-size 64)
+(define tex-cell 8)
+
+(define (make-checker-texture size cell)
+  (define px (make-u8-array (* size size 4) 255))
+  (for* ([y (in-range size)] [x (in-range size)])
+    (define on? (even? (+ (quotient x cell) (quotient y cell))))
+    (define i (* (+ (* y size) x) 4))
+    (define r (if on? 230 40))
+    (define g (if on? 140 70))
+    (define b (if on? 60 130))
+    (u8-array-set! px i r)
+    (u8-array-set! px (+ i 1) g)
+    (u8-array-set! px (+ i 2) b)
+    (u8-array-set! px (+ i 3) 255))          ; alpha 不透明
+  px)
+
+;; ------------------------------------------------------------
+;; 二、着色器：顶点位置改为"原位置乘变换矩阵"
+;; ------------------------------------------------------------
+;; 和 04 课相比只多了一样东西：uniform mat-4 u-transform。
+;; 它在 CPU 端每帧算好、每帧上传，是整个矩形共用的一个矩阵——
+;; 顶点着色器对四个顶点各乘一次，于是整个矩形一起动。
+(define vert-src
+  (glsl (version 330 core)
+        (layout (location 0) in vec-2 a-pos)     ; 属性 0：位置
+        (layout (location 1) in vec-2 a-uv)      ; 属性 1：UV 坐标
+        (uniform mat-4 u-transform)              ; 变换矩阵：平移·旋转·缩放
+        (out vec-2 v-uv)
+        (define (main) void
+          ;; 位置先补一个 z=0、w=1，再乘矩阵；w=1 是给平移留的位置。
+          (set! gl-position (* u-transform (vec-4 a-pos 0.0 1.0)))
+          (set! v-uv a-uv))))
+
+;; 片元着色器和 04 课一模一样：按 UV 采样棋盘。
+(define frag-src
+  (glsl (version 330 core)
+        (in vec-2 v-uv)
+        (uniform sampler-2d u-tex)
+        (out vec-4 frag-color)
+        (define (main) void
+          (set! frag-color (texture u-tex v-uv)))))
+
+;; ------------------------------------------------------------
+;; 三、顶点数据：位置(vec-2) + UV(vec-2) 交错，共 4 个 float = 16 字节
+;; ------------------------------------------------------------
+;;    x  y  u  v | x  y  u  v | …
+;; 顶点只写"原始"位置：矩形中心在原点。往哪儿摆、转多少、多大，全交给矩阵。
+(define vertex-data
+  (concat-vecs (vec-2  0.5  0.5) (vec-2 1.0 1.0)     ; 右上
+               (vec-2  0.5 -0.5) (vec-2 1.0 0.0)     ; 右下
+               (vec-2 -0.5 -0.5) (vec-2 0.0 0.0)     ; 左下
+               (vec-2 -0.5  0.5) (vec-2 0.0 1.0)))   ; 左上
+
+(define indices (u16-array 0 1 2   0 2 3))          ; 两个三角形拼成矩形
+
+(define program #f)
+(define vao #f)
+(define texture #f)
+(define u-transform-loc #f)
+
+(define (init)
+  (set! program (build-program (gl-vertex-shader vert-src)
+                               (gl-fragment-shader frag-src)))
+
+  ;; ---- 3.1 创建并上传纹理 ----
+  (set! texture (texture-new))
+  (gl-bind-texture gl-texture-2d texture)
+  (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-s gl-repeat)
+  (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-t gl-repeat)
+  (gl-tex-parameter-i gl-texture-2d gl-texture-min-filter gl-linear-mipmap-linear)
+  (gl-tex-parameter-i gl-texture-2d gl-texture-mag-filter gl-linear)
+
+  (define checker (make-checker-texture tex-size tex-cell))
+  (gl-tex-image-2d gl-texture-2d 0 gl-rgba tex-size tex-size 0
+                   gl-rgba gl-unsigned-byte checker)
+  (gl-generate-mipmap gl-texture-2d)
+
+  ;; ---- 3.2 uniform：采样器指向 0 号纹理单元 ----
+  (program-use program)                       ; uniform 作用在"当前程序"上
+  (uniform-set! (uniform-location program "u_tex") 'sampler-2d 0)
+  ;; 变换矩阵的位置也查一次存起来，draw 里每帧往这里送新算出的矩阵。
+  (set! u-transform-loc (uniform-location program "u_transform"))
+
+  ;; ---- 3.3 VAO / VBO / EBO ----
+  (set! vao (vertex-array-new))
+  (gl-bind-vertex-array vao)
+
+  (define vbo (buffer-new))
+  (gl-bind-buffer gl-array-buffer vbo)
+  (buffer-upload gl-array-buffer vertex-data gl-static-draw)
+  ;; 步长和偏移都从布局算出来，不写字面量。
+  (define stride (shader-stride-bytes 'vec-2 'vec-2))   ; 2 + 2 = 4 个 float = 16 字节
+  (define uv-offset (shader-byte-size 'vec-2))         ; 跳过位置那 2 个 float = 8 字节
+  (gl-vertex-attrib-pointer 0 2 gl-float #f stride 0)
+  (gl-enable-vertex-attrib-array 0)
+  (gl-vertex-attrib-pointer 1 2 gl-float #f stride uv-offset)
+  (gl-enable-vertex-attrib-array 1)
+
+  (define ebo (buffer-new))
+  (gl-bind-buffer gl-element-array-buffer ebo)
+  (buffer-upload gl-element-array-buffer indices gl-static-draw)
+
+  (gl-bind-vertex-array 0))
+
+(define (draw)
+  ;; 从程序启动到现在的秒数，用来当旋转角度和脉动相位。
+  (define t (/ (current-inexact-monotonic-milliseconds) 1000.0))
+
+  (gl-clear-color 0.10 0.12 0.20 1.0)
+  (gl-clear gl-color-buffer-bit)
+
+  (program-use program)
+
+  ;; 缩放脉动：s 在 0.6..1.0 之间来回，让"大小在变"这件事一眼看得出来。
+  (define s (+ 0.8 (* 0.2 (sin (* t 2.0)))))
+
+  ;; 组合：M = T · R · S。乘法从右往左作用——点先被 S 缩、再被 R 转、最后被 T 移。
+  ;; 旋转和缩放都是"绕原点"的，而原点正好是矩形中心，所以看到的是自转 + 原地脉动；
+  ;; 最后那步平移把整个矩形挪到右下角。
+  (define M (mat4-mul (m-translate (vec-3 0.5 -0.5 0.0))
+                      (mat4-mul (m-rotate-z t)
+                                (m-scale (vec-3 s s 1.0)))))
+  ;; 上传矩阵：uniform-set! 按 'mat-4 选对 gl-uniform-matrix-4fv，并固定 count=1、transpose=#f
+  ;; （mat-4 本来就是列主序，与 OpenGL 期望的上传布局一致，不需要转置）。
+  (uniform-set! u-transform-loc 'mat-4 M)
+
+  (gl-bind-vertex-array vao)
+  (gl-draw-elements gl-triangles 6 gl-unsigned-short 0)
+  (gl-bind-vertex-array 0))
+
+(define-values (frame canvas)
+  (make-window #:title "05 变换"
+               #:width 800
+               #:height 600
+               #:init init
+               #:draw draw))
+(send frame show #t)
+
+;; 矩阵每帧在变，需要定时器不断请求重绘
+(define timer
+  (new timer% [interval 16]
+              [notify-callback (lambda () (send canvas refresh))]))
+
+;; ------------------------------------------------------------
+;; 试试看（改完重跑）：
+;;   · 把组合改成 (mat4-mul (m-rotate-z t) (m-translate (vec-3 0.5 -0.5 0.0)))
+;;     → 变成先平移后旋转，矩形绕着屏幕中心公转，不再原地自转。
+;;   · 把 m-rotate-z 换成 m-rotate-x / m-rotate-y → 看起来被"压扁"了，
+;;     因为还没有深度和投影（06 讲）。
+;;   · 把 m-scale 的第三个分量也改成 s → 画面没变化：z 不影响 2D 顶点。
+;;   · 把 m-translate 的 z 改成 -0.5 → 画面也没变化：没有投影时 z 只是白写。
+;; ============================================================</code></pre>
+      </div>
+
+      <h2 id="s5-exercise">试试看</h2>
+
+      <ol class="exercise">
+        <li>把组合改成 <code>(mat4-mul (m-rotate-z t) (m-translate (vec-3 0.5 -0.5 0.0)))</code>——先平移后旋转。矩形不再原地自转，而是带着位置一起绕屏幕中心公转（图 5-4 左边那张）。</li>
+        <li>把 <code>m-rotate-z</code> 换成 <code>m-rotate-x</code> 或 <code>m-rotate-y</code>：看起来像是被「压扁」了。因为它们是把 z 和另一个分量放进平面里转，而本课顶点的 z 恒为 0、又没有投影，转出去的那部分维度在屏幕上根本显示不出来。06 讲投影和深度之后才是真三维。</li>
+        <li>把 <code>(m-scale (vec-3 s s 1.0))</code> 的第三个分量也改成 <code>s</code>：画面没变化。顶点 z 全是 0，乘任何数还是 0。</li>
+        <li>把 <code>(m-translate (vec-3 0.5 -0.5 0.0))</code> 的 z 改成 -0.5：画面也没变化。没有投影时 z 只是白写在矩阵里，它不参与 <code>gl-position</code> 的 x、y，也就落不到屏幕上——和上一条一起引出 06 的坐标系。</li>
+      </ol>
+
+      <h2 id="s5-summary">小结</h2>
+
+      <table class="spec">
+        <thead>
+          <tr>
+            <th>概念</th>
+            <th>一句话</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>齐次坐标</td>
+            <td>点写成 <code>(x, y, z, 1)</code>，多出来的 <code>w=1</code> 让平移也能写成矩阵乘法</td>
+          </tr>
+          <tr>
+            <td>平移矩阵</td>
+            <td>位移只长在第 4 列（col3），前 3 列是单位阵；列主序下位移就在最后一列</td>
+          </tr>
+          <tr>
+            <td>旋转矩阵</td>
+            <td>绕哪个轴转，就哪两个分量在平面里转，第三个不动；cos / sin 挤在对应的 2×2 角上</td>
+          </tr>
+          <tr>
+            <td>缩放矩阵</td>
+            <td>对角线上放 sx、sy、sz，其余为 0；乘上去就是各分量各乘自己的倍数</td>
+          </tr>
+          <tr>
+            <td>组合顺序</td>
+            <td><code>M = T·R·S</code>，从右往左作用：点先缩、再转、最后移；顺序换结果就换</td>
+          </tr>
+          <tr>
+            <td>uniform mat-4 上传</td>
+            <td><code>(uniform-set! loc 'mat-4 M)</code>：内部选 <code>gl-uniform-matrix-4fv</code>、count=1、transpose 固定 <code>#f</code>，还要在 <code>program-use</code> 之后</td>
+          </tr>
+          <tr>
+            <td>列主序</td>
+            <td><code>mat-4</code> 收 4 个列向量，代码里从上往下读到的就是内存顺序，正好是 OpenGL 要的布局</td>
+          </tr>
+        </tbody>
+      </table>
+
+    </main>
+
+    <nav class="toc">
+      <b>本节目录</b>
+      <ol>
+        <li><a href="#s5-1">5.1 变换就是乘矩阵</a></li>
+        <li><a href="#s5-2">5.2 平移矩阵</a></li>
+        <li><a href="#s5-3">5.3 旋转矩阵</a></li>
+        <li><a href="#s5-4">5.4 缩放矩阵</a></li>
+        <li><a href="#s5-5">5.5 组合与顺序</a></li>
+        <li><a href="#s5-5-1">5.5.1 先在 CPU 上乘一遍</a></li>
+        <li><a href="#s5-6">5.6 把矩阵送上 GPU</a></li>
+        <li><a href="#s5-code">完整代码</a></li>
+        <li><a href="#s5-exercise">试试看</a></li>
+        <li><a href="#s5-summary">小结</a></li>
+      </ol>
+    </nav>
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="../04-textures/index.html">← 04 纹理</a>
+    <a class="next" href="../06-coordinate-systems/index.html">06 坐标系 →</a>
+  </nav>
+
+  <footer class="site-footer">
+    <p>本教程参照 learnopengl.com 的章节节奏，代码用 racket-shader 写。纯静态站，源码可在浏览器里直接查看。</p>
+  </footer>
+
+</div>
+</body>
+</html>

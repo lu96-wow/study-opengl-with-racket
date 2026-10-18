@@ -1,0 +1,7 @@
+# Racket 编译缓存（raco make / raco compile 产物）
+compiled/
+*.zo
+*.dep
+
+# GitHub Pages 构建产物
+_site/

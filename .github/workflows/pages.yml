@@ -1,0 +1,55 @@
+name: Deploy static site to GitHub Pages
+
+# 教程本身是纯静态 HTML（相对链接），这里只做两件事：
+# 1. 把仓库里的“站点文件”挑出来（排除 compiled/*.zo/*.dep 等构建产物）；
+# 2. 上传并发布到 GitHub Pages。
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stage site files
+        run: |
+          mkdir -p _site
+          rsync -a \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='_site/' \
+            --exclude='node_modules/' \
+            --exclude='DESIGN.md' \
+            --exclude='compiled/' \
+            --exclude='*.zo' \
+            --exclude='*.dep' \
+            ./ _site/
+          touch _site/.nojekyll
+
+      - uses: actions/configure-pages@v5
+        with:
+          # 仓库第一次部署时自动启用 Pages（否则需要在 Settings 里手动切换来源）
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

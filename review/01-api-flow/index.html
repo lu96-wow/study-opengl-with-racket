@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>复习 01 · API 与数据流 — study-opengl</title>
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/highlight.js" defer></script>
+</head>
+<body>
+<div class="page">
+
+  <header class="site-header">
+    <a class="site-title" href="../../index.html">study-opengl</a>
+    <nav class="crumbs"><a href="../../index.html">课程</a> / <span>复习 01 · API 与数据流</span></nav>
+  </header>
+
+  <div class="layout">
+    <main class="content">
+
+      <h1>复习 01 · API 与数据流</h1>
+
+      <p class="goal">目标：把 02–04 用过的 OpenGL API 重新排一遍，分清哪些是「传数据」、哪些是「设状态」、哪些是「启动计算」。这一节不引入新效果，只做记忆整理。</p>
+
+      <div class="run"><span class="prompt">$</span> racket review/01-api-flow/api-review.rkt</div>
+
+      <h2 id="r1-1">R1.1 API 不做计算</h2>
+
+      <p>矩阵乘法、光照、纹理采样，都是 shader 或 CPU 代码里的公式。API 主要做三件事：</p>
+
+      <ul>
+        <li><b>传数据</b>：<code>gl-buffer-data</code>、<code>gl-tex-image-2d</code>、<code>gl-uniform-*</code></li>
+        <li><b>设状态</b>：<code>gl-use-program</code>、<code>gl-bind-vertex-array</code>、<code>gl-enable</code></li>
+        <li><b>启动计算</b>：<code>gl-draw-arrays</code> / <code>gl-draw-elements</code></li>
+      </ul>
+
+      <p><a class="filelink" href="../../code.html?f=review/01-api-flow/api-review.rkt">api-review.rkt</a> 会把这张表打印出来。核心对照：</p>
+
+      <table class="spec">
+        <thead><tr><th>API</th><th>它改变什么</th><th>数据方向</th></tr></thead>
+        <tbody>
+          <tr><td><code>gl-create-shader / gl-shader-source / gl-compile-shader</code></td><td>创建并编译 shader</td><td>CPU → GPU</td></tr>
+          <tr><td><code>gl-create-program / gl-attach-shader / gl-link-program</code></td><td>链接 program</td><td>GPU 内部</td></tr>
+          <tr><td><code>gl-gen-buffers / gl-buffer-data</code></td><td>创建 VBO/EBO 并上传字节</td><td>CPU → GPU</td></tr>
+          <tr><td><code>gl-gen-vertex-arrays / gl-vertex-attrib-pointer</code></td><td>记录顶点格式</td><td>CPU → GPU 状态</td></tr>
+          <tr><td><code>gl-tex-image-2d</code></td><td>上传纹理像素</td><td>CPU → GPU</td></tr>
+          <tr><td><code>gl-draw-elements</code></td><td>跑顶点/片元 shader</td><td>GPU → 屏幕</td></tr>
+        </tbody>
+      </table>
+
+      <div class="code">
+        <div class="code-title">raw 三角形：API 的顺序（摘录）</div>
+        <pre><code class="lang-racket">;; 编译 + 链接
+(define vs (gl-create-shader gl-vertex-shader))
+(gl-shader-source vs 1 (vector (glsl-program-src vert-src)) (s32vector ...))
+(gl-compile-shader vs)
+(define prog (gl-create-program))
+(gl-attach-shader prog vs)
+(gl-link-program prog)
+
+;; 上传数据 + 记录格式
+(gl-bind-buffer gl-array-buffer vbo)
+(gl-buffer-data gl-array-buffer size data gl-static-draw)
+(gl-bind-vertex-array vao)
+(gl-vertex-attrib-pointer 0 3 gl-float #f 0 0)
+(gl-enable-vertex-attrib-array 0)
+
+;; 启动计算
+(gl-use-program prog)
+(gl-bind-vertex-array vao)
+(gl-draw-arrays gl-triangles 0 3)</code></pre>
+      </div>
+
+      <h2 id="r1-2">R1.2 你应该能回答</h2>
+
+      <ol class="exercise">
+        <li>为什么 <code>gl-vertex-attrib-pointer</code> 没有 buffer 参数？它读的是当前绑定的哪个 buffer？</li>
+        <li>为什么 <code>ELEMENT_ARRAY_BUFFER</code> 的绑定属于 VAO，而 <code>ARRAY_BUFFER</code> 不属于？</li>
+        <li><code>gl-draw-arrays</code> 这一句到底启动了什么？CPU 在这之后还参与逐顶点/逐像素计算吗？</li>
+        <li>如果不用 GPU，CPU 要怎样算出同样的三角形？需要上传什么？</li>
+      </ol>
+
+      <div class="note key">
+        <p><b>下一步</b>复习 02 会把「矩阵计算」拆成 CPU 版和 GPU 版；复习 03 会把「光照计算」拆成逐顶点、逐片元和离线烘焙。</p>
+      </div>
+
+
+    </main>
+
+    <nav class="toc">
+      <b>本节目录</b>
+      <ol>
+        <li><a href="#r1-1">R1.1 API 不做计算</a></li>
+        <li><a href="#r1-2">R1.2 你应该能回答</a></li>
+      </ol>
+    </nav>
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="../../04-textures/index.html">← 04 纹理</a>
+    <a class="next" href="../02-matrices/index.html">复习 02 矩阵 →</a>
+  </nav>
+
+  <footer class="site-footer">
+    <p>本教程参照 learnopengl.com 的章节节奏，代码用 racket-shader 写。纯静态站，源码可在浏览器里直接查看。</p>
+  </footer>
+
+</div>
+</body>
+</html>

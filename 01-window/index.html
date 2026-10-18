@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>01 · 开一扇窗口 — study-opengl</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/highlight.js" defer></script>
+</head>
+<body>
+<div class="page">
+
+  <header class="site-header">
+    <a class="site-title" href="../index.html">study-opengl</a>
+    <nav class="crumbs"><a href="../index.html">课程</a> / <span>01 · 开一扇窗口</span></nav>
+  </header>
+
+  <div class="layout">
+    <main class="content">
+
+      <h1>开一扇窗口</h1>
+
+      <p class="goal">本节目标：开一扇能持续重绘的窗口，看到会「呼吸」的清屏色。跑起来应该弹出一个 640×480 的窗口，颜色缓慢地来回变；点右上角的 X，进程真的退出。</p>
+
+      <div class="run"><span class="prompt">$</span> racket 01-window/window.rkt</div>
+
+      <div class="note key">
+        <p><b>计算位置</b>窗口、GL 上下文、事件循环和 viewport 状态在 CPU（Racket/GUI）侧准备；<code>gl-clear</code>、<code>swap-gl-buffers</code> 是 CPU 下给 GPU 的命令。本课还没有顶点/片元着色器，GPU 只执行清屏和缓冲交换这两个固定动作；下一课才把顶点数据送进去。</p>
+      </div>
+
+      <h2 id="s1-1">1.1 OpenGL 不提供窗口</h2>
+
+      <p>OpenGL 的职责只有一条：往「某块画布」上画东西。窗口、标题栏、鼠标键盘事件、定时器，这些都不归它管，规范里根本没有这类函数。所以任何 OpenGL 程序都得先借一个 GUI 库解决「画布从哪来」，再把 OpenGL 挂上去。</p>
+
+      <p>learnopengl 用 GLFW，我们用 Racket 自带的 <code>racket/gui</code>。三个类各管一件事：</p>
+
+      <ul>
+        <li><code>frame%</code>：窗口本身——标题栏、边框、关闭按钮。</li>
+        <li><code>canvas%</code>：窗口里的一块可绘制区域，GL 上下文就建在它身上。</li>
+        <li><code>timer%</code>：定时器，用来定期请求重绘。</li>
+      </ul>
+
+      <h2 id="s1-2">1.2 GL 上下文</h2>
+
+      <p>OpenGL 没有全局状态：颜色、缓冲、着色器程序全都住在一个叫「上下文」（context）的环境里。一块画布对应一个上下文，所有 <code>gl-*</code> 命令都发给「当前上下文」。</p>
+
+      <p>于是每个 <code>gl-*</code> 命令都得先回答一个问题：发给谁？Racket 这边的办法是用 <code>with-gl-context</code> 把绘制代码包起来——它先切到这块画布的上下文，再执行你给的 lambda，退出时切回去。不进去的话，<code>gl-*</code> 不知道命令该发给谁。</p>
+
+      <p>上下文是建画布的时候创建的，创建前先给它一份配置：</p>
+
+      <div class="code">
+        <div class="code-title">01-window/window.rkt<a class="srclink" href="../code.html?f=01-window/window.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">(define cfg (new gl-config%))
+;; core profile：只用现代可编程管线，不要旧式固定管线（和 shader 里的 330 core 对应）
+(send cfg set-legacy? #f)
+</code></pre>
+      </div>
+
+      <p><code>gl-config%</code> 来自 <code>racket/draw</code>。<code>set-legacy? #f</code> 就是上一课 0.6 讲的 core profile 那一端：只要现代可编程管线。</p>
+
+      <h2 id="s1-3">1.3 窗口与画布</h2>
+
+      <p><code>frame%</code> 拿来就能用，但默认的关闭行为只是把窗口藏起来——窗口不见了，进程还活着。要真正退出，得派生一个子类，在 <code>on-close</code> 里补上 <code>(exit 0)</code>：</p>
+
+      <div class="code">
+        <div class="code-title">01-window/window.rkt<a class="srclink" href="../code.html?f=01-window/window.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">;; frame% 是窗口类；这里派生一个子类，只为加一件事：点 X 时真正退出进程
+;; （默认只是把窗口藏起来）。
+(define gl-frame%
+  (class frame%
+    ;; on-close：点 X 时系统调的方法。
+    ;; define/augment：在父类实现之外追加动作（不替换）。
+    (define/augment (on-close)
+      (inner (void) on-close)   ; 先走父类原本的关闭流程
+      (exit 0))                 ; 再结束进程
+    (super-new)))               ; 调用父类构造器
+</code></pre>
+      </div>
+
+      <div class="note warn">
+        <p><b>坑</b><code>on-close</code> 的父类实现只负责隐藏窗口，所以不写这个子类的话，点了 X 窗口消失、进程不退（终端里能看到 <code>racket</code> 还在）。注意用的是 <code>define/augment</code>：它在父类实现之外追加动作，不替换父类实现，所以要先 <code>inner</code> 走完父类的关闭流程，再 <code>exit</code>。</p>
+      </div>
+
+      <p>画布这边，<code>canvas%</code> 的 style 里加 <code>'gl</code>，它就会在自己身上创建一个 GL 上下文；再加 <code>'no-autoclear</code>，是让系统别自动擦背景——擦除交给我们自己的 <code>gl-clear</code> 管，清屏色才完全由程序说了算。</p>
+
+      <p>把三者装起来：</p>
+
+      <div class="code">
+        <div class="code-title">01-window/window.rkt<a class="srclink" href="../code.html?f=01-window/window.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">(define frame (new gl-frame% [label "01 窗口"] [width 640] [height 480]))
+(define canvas (new gl-canvas%
+                    [style '(gl no-autoclear)]
+                    [gl-config cfg]
+                    [parent frame]))
+(send frame show #t)
+</code></pre>
+      </div>
+
+      <p><code>canvas</code> 创建出来时已经带着 <code>cfg</code> 和父窗口，<code>show #t</code> 之后窗口才出现在屏幕上、画布才有实际尺寸。</p>
+
+      <h2 id="s1-4">1.4 on-size 与 viewport</h2>
+
+      <p>顶点坐标是标准坐标，范围 -1..1，跟窗口有多大、多少个像素没有关系。把它贴到画布上的哪块像素矩形，由 viewport 决定——设好之后，所有绘制都落在这一块矩形里。窗口尺寸变了就得重设：</p>
+
+      <div class="code">
+        <div class="code-title">01-window/window.rkt<a class="srclink" href="../code.html?f=01-window/window.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">    ;; on-size：窗口尺寸变化时回调。
+    ;; 顶点坐标是标准坐标（-1..1），gl-viewport 决定它贴到窗口的哪块像素矩形；
+    ;; 参数是 (左下角 x, 左下角 y, 宽, 高)，这里铺满整个画布。
+    (define/override (on-size _w _h)
+      (with-gl-context
+       (lambda ()
+         (define-values (cw ch) (get-gl-client-size))
+         (gl-viewport 0 0 cw ch))))
+</code></pre>
+      </div>
+
+      <p><code>gl-viewport</code> 的四个参数是（左下角 x, 左下角 y, 宽, 高），原点在画布左下角；<code>get-gl-client-size</code> 给的是画布客户区的宽高。这里让视口铺满整块画布，所以窗口怎么变，画面都正好占满。</p>
+
+      <p>注意 viewport 也必须写在 <code>with-gl-context</code> 里面：它是一条 GL 命令，同样要知道发给哪个上下文。</p>
+
+      <h2 id="s1-5">1.5 on-paint 与双缓冲</h2>
+
+      <p>系统在「需要重画」时回调 <code>on-paint</code>。所有绘制都写在这里——不是写在某个循环里，也不是写在定时器里（原因见 1.6）。</p>
+
+      <p>绘制前先用 <code>with-gl-context</code> 切上下文，然后按上一课 0.3 的顺序来：<code>gl-clear-color</code> 只设状态，<code>gl-clear</code> 才真的擦。最后一句 <code>swap-gl-buffers</code> 是双缓冲翻页：</p>
+
+      <div class="code">
+        <div class="code-title">01-window/window.rkt<a class="srclink" href="../code.html?f=01-window/window.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">    ;; on-paint：系统需要重画时回调。所有绘制都写这里。
+    (define/override (on-paint)
+      ;; with-gl-context：先切到本画布的上下文，再执行 lambda。
+      ;; 不进去的话，gl-* 不知道命令该发给谁。
+      (with-gl-context
+       (lambda ()
+         ;; 用经过的时间做一个会"呼吸"的颜色。
+         ;; 用单调时钟，别数"画了多少帧"——定时器间隔只是约数，会漂移。
+         (define t (/ (- (current-inexact-monotonic-milliseconds) start-ms) 1000.0))
+
+         ;; gl-clear-color(r, g, b, a)：设清屏色，只"记住"，不画。
+         ;; gl-clear(mask)：真正擦除；gl-color-buffer-bit 表示颜色缓冲
+         ;; （它是位掩码常量，以后要同时擦深度缓冲时把掩码"按位或"起来）。
+         (gl-clear-color (* 0.5 (+ 1.0 (sin t)))
+                         (* 0.5 (+ 1.0 (sin (+ t 2.0))))
+                         (* 0.5 (+ 1.0 (sin (+ t 4.0))))
+                         1.0)
+         (gl-clear gl-color-buffer-bit)
+
+         ;; swap-gl-buffers：双缓冲翻页。我们画在"后台缓冲"，这一句整体翻到屏幕；
+         ;; 直接画前台会看到画到一半的样子（闪烁）。
+         (swap-gl-buffers))))
+</code></pre>
+      </div>
+
+      <p>窗口系统给一块画布准备了两块同样大小的缓冲。你在后台缓冲上画，前台缓冲是屏幕正在显示的那一块；画完一次整体交换，屏幕立刻换成新画面。省掉这一句，画了半天也翻不到屏幕上（或者在慢的驱动上看到画面被撕成两半）。里面算颜色那几行 1.7 再讲。</p>
+
+      <h2 id="s1-6">1.6 事件驱动 vs learnopengl 的 while 主循环</h2>
+
+      <p>这是 Racket 版和 C++ 版节奏上最大的差别，值得单独说清楚。</p>
+
+      <p>learnopengl 的程序有一个自己写的主循环：每一轮里自己处理输入、自己调 render、自己翻页、自己取事件。你写的代码占着这个循环不放，从头转到窗口关闭。C++ 版大致长这样：</p>
+
+      <div class="code">
+        <div class="code-title">learnopengl 的 C++ 主循环（对照，非本项目代码）</div>
+        <pre>while (!glfwWindowShouldClose(window))
+{
+    processInput(window);     // 处理键盘鼠标
+    render();                 // 画这一帧
+    glfwSwapBuffers(window);  // 翻页
+    glfwPollEvents();         // 取事件
+}
+</pre>
+      </div>
+
+      <p><code>racket/gui</code> 是事件驱动的：你不写循环，程序把控制权交回给系统的 GUI 事件队列，它收到「该重绘了」「尺寸变了」「点了关闭」这类消息时，才回调你写的方法。同样是「一帧一帧地画」，结构从「一个大循环」变成「一组回调」。</p>
+
+      <table class="spec">
+        <thead>
+          <tr>
+            <th>维度</th>
+            <th>learnopengl 的 C++ 版</th>
+            <th>本教程的 Racket 版</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>谁在循环</td>
+            <td>自己写 <code>while</code> 循环，占着线程不放</td>
+            <td>不写循环，由 GUI 事件队列驱动</td>
+          </tr>
+          <tr>
+            <td>何时绘制</td>
+            <td>每一轮循环都调一次 <code>render()</code></td>
+            <td>系统在需要重画时回调 <code>on-paint</code></td>
+          </tr>
+          <tr>
+            <td>如何退出</td>
+            <td>窗口的关闭标志让 <code>while</code> 条件为假，循环结束</td>
+            <td><code>on-close</code> 里 <code>(exit 0)</code> 结束进程</td>
+          </tr>
+          <tr>
+            <td>定时刷新</td>
+            <td>循环里 sleep，或靠 vsync 把这一轮堵住</td>
+            <td><code>timer%</code> 定时请求重绘</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="note key">
+        <p><b>关键点</b>定时器只请求重绘，绘制永远在 <code>on-paint</code> 里。所以 <code>timer%</code> 的回调里只写 <code>send canvas refresh</code> 这一件事——绝不要把绘制代码搬进定时器回调，那样上下文不对、翻页时机也不对。</p>
+      </div>
+
+      <h2 id="s1-7">1.7 让它动起来</h2>
+
+      <p>上面的窗口只在「系统觉得需要重画」时画一帧。要持续动下去，得有人不断告诉系统「该重画了」，<code>timer%</code> 就是干这个的：每 16ms 调一次回调，回调里只做一件事——请求重绘。</p>
+
+      <div class="code">
+        <div class="code-title">01-window/window.rkt<a class="srclink" href="../code.html?f=01-window/window.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">;; 上面只在"需要重画时"画一帧。timer% 每 16ms 调一次回调，
+;; 回调里请求重绘，系统随后调 on-paint —— 定时器只请求，绘制永远在 on-paint。
+(define timer
+  (new timer% [interval 16]
+              [notify-callback (lambda () (send canvas refresh))]))
+</code></pre>
+      </div>
+
+      <p>16ms 只是按 60 次/秒估的间隔，不是硬保证：<code>timer%</code> 只负责「请求刷新」，系统可能合并或延迟；它也不是 vsync，画面仍可能撕裂。本教程先把「谁请求、谁绘制」讲清楚，帧率控制留到需要时再处理。</p>
+
+      <p>颜色怎么算出来的？把「从画布创建到现在过了多少毫秒」取出来，换算成秒：</p>
+
+      <div class="code">
+        <div class="code-title">01-window/window.rkt（on-paint 里）<a class="srclink" href="../code.html?f=01-window/window.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">         ;; 用经过的时间做一个会"呼吸"的颜色。
+         ;; 用单调时钟，别数"画了多少帧"——定时器间隔只是约数，会漂移。
+         (define t (/ (- (current-inexact-monotonic-milliseconds) start-ms) 1000.0))
+</code></pre>
+      </div>
+
+      <p>这里用的是<strong>单调时钟</strong>，而不是「画了多少帧 × 16ms」。原因有两个：定时器的间隔只是约数，系统忙的时候 16ms 会变成 18、25ms，数帧的算法会越走越偏；而单调时钟只增不减，也不受系统时间被调整的影响，所以 <code>t</code> 和真实经过的时间一定对得上，动画速度不随机器负载变化。</p>
+
+      <p>三个 <code>sin</code> 的相位差分别是 0、2、4，红绿蓝三条通道错开变化，所以颜色不是简单地从黑到白再回来，而是在色环上绕。计时起点 <code>start-ms</code> 是画布创建时记下的，就在 class 体内，紧挨着 <code>inherit</code> 那几行。</p>
+
+      <p>把上面这条流程摊平来看就是图 1-1：标蓝的两格是我们要写的东西，其余是系统干的。</p>
+
+      <figure class="figure">
+        <svg viewBox="0 0 926 106" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>一帧的时序：timer% 每 16ms 请求一次重绘，系统回调 on-paint，在 with-gl-context 里绘制并翻页，然后等下一次定时</title>
+          <defs>
+            <marker id="loop-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+            </marker>
+          </defs>
+
+          <rect x="8" y="14" width="134" height="40" rx="8" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <text x="75" y="39" text-anchor="middle" font-size="14" fill="var(--accent)">timer% 每 16ms</text>
+
+          <rect x="174" y="14" width="164" height="40" rx="8" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="256" y="39" text-anchor="middle" font-size="14" fill="var(--fg)">send canvas refresh</text>
+
+          <rect x="370" y="14" width="152" height="40" rx="8" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="446" y="39" text-anchor="middle" font-size="14" fill="var(--fg)">系统回调 on-paint</text>
+
+          <rect x="554" y="14" width="196" height="40" rx="8" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <text x="652" y="39" text-anchor="middle" font-size="14" fill="var(--accent)">with-gl-context 内绘制</text>
+
+          <rect x="782" y="14" width="140" height="40" rx="8" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="852" y="39" text-anchor="middle" font-size="14" fill="var(--fg)">swap-gl-buffers</text>
+
+          <line x1="142" y1="34" x2="169" y2="34" stroke="var(--line)" stroke-width="1.5" marker-end="url(#loop-arrow)"/>
+          <line x1="338" y1="34" x2="365" y2="34" stroke="var(--line)" stroke-width="1.5" marker-end="url(#loop-arrow)"/>
+          <line x1="522" y1="34" x2="549" y2="34" stroke="var(--line)" stroke-width="1.5" marker-end="url(#loop-arrow)"/>
+          <line x1="750" y1="34" x2="777" y2="34" stroke="var(--line)" stroke-width="1.5" marker-end="url(#loop-arrow)"/>
+
+          <polyline points="852,54 852,90 75,90 75,59" fill="none" stroke="var(--line)" stroke-width="1.5" marker-end="url(#loop-arrow)"/>
+          <text x="463" y="80" text-anchor="middle" font-size="13" fill="var(--fg)">每 16ms 一轮</text>
+        </svg>
+        <figcaption class="figcaption">图 1-1 一帧的时序：定时器请求 → 系统回调 → 绘制翻页</figcaption>
+      </figure>
+
+      <p>回到 1.5 提的双缓冲。一次 <code>on-paint</code> 里发生的事情，用图 1-2 表示就是：我们始终在后台缓冲上画，画完把两块缓冲整体交换。</p>
+
+      <figure class="figure">
+        <svg viewBox="0 0 632 132" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>双缓冲：我们在后台缓冲上画，画完用 swap-gl-buffers 把两块缓冲整体交换，屏幕看的那块变成刚画好的</title>
+          <defs>
+            <marker id="swap-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+            </marker>
+          </defs>
+
+          <rect x="8" y="18" width="250" height="76" rx="8" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <text x="133" y="50" text-anchor="middle" font-size="14" fill="var(--accent)">后台缓冲</text>
+          <text x="133" y="72" text-anchor="middle" font-size="13" fill="var(--accent)">（我们在画）</text>
+
+          <rect x="374" y="18" width="250" height="76" rx="8" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="499" y="50" text-anchor="middle" font-size="14" fill="var(--fg)">前台缓冲</text>
+          <text x="499" y="72" text-anchor="middle" font-size="13" fill="var(--fg)">（屏幕在看）</text>
+
+          <line x1="266" y1="44" x2="366" y2="44" stroke="var(--line)" stroke-width="1.5" marker-end="url(#swap-arrow)"/>
+          <line x1="366" y1="68" x2="266" y2="68" stroke="var(--line)" stroke-width="1.5" marker-end="url(#swap-arrow)"/>
+
+          <text x="316" y="118" text-anchor="middle" font-size="13" fill="var(--fg)">swap-gl-buffers</text>
+        </svg>
+        <figcaption class="figcaption">图 1-2 双缓冲：画在后台，翻页后屏幕才看到这一帧</figcaption>
+      </figure>
+
+      <p>两块缓冲交换之后，新的一帧在屏幕上，而后台缓冲里还留着上一帧的画面——所以下一轮 <code>on-paint</code> 开头必须再来一次 <code>gl-clear</code>，把它擦干净再画。</p>
+
+      <h2 id="s1-8">1.8 把窗口骨架收进 <code>lib/window.rkt</code></h2>
+
+      <p>01 的窗口代码只有这一课需要从零讲。后面每一课都要用同样的「建 frame / 建 canvas / 进入 GL 上下文 / 第一次 init / 每帧 draw / swap」骨架，如果每课都抄一遍，教程会被窗口代码淹没。所以从 02 开始统一 <code>(require "../lib/window.rkt")</code>，只写 <code>init</code> 和 <code>draw</code>。</p>
+
+      <p><code>lib/window.rkt</code> 不是新的 OpenGL 机制，它就是把 01 的 <code>gl-frame%</code> / <code>gl-canvas%</code> 收成一个函数：</p>
+
+      <div class="code">
+        <div class="code-title">后面每课开头的固定写法</div>
+        <pre><code class="lang-racket">(require "../lib/window.rkt")
+
+(define (init) ...)   ; 建 GPU 对象：program / VBO / VAO / 纹理 … 只跑一次
+(define (draw) ...)   ; 每帧：清屏 + 绑定 + 画
+
+(define-values (frame canvas)
+  (make-window #:title "…"
+               #:init init
+               #:draw draw))
+(send frame show #t)</code></pre>
+      </div>
+
+      <p><code>make-window</code> 的参数就是 01 里那些东西的封装：</p>
+
+      <table class="spec">
+        <thead><tr><th>参数</th><th>对应 01 的哪一段</th><th>什么时候调用</th></tr></thead>
+        <tbody>
+          <tr><td><code>#:init</code></td><td>第一次进入 GL 上下文后要做的初始化</td><td>第一次 <code>on-paint</code>，只跑一次</td></tr>
+          <tr><td><code>#:draw</code></td><td>每次 <code>on-paint</code> 里的绘制内容</td><td>初始化成功后，每帧一次</td></tr>
+          <tr><td><code>#:on-size</code></td><td><code>on-size</code> 里重设 viewport 之后</td><td>窗口尺寸变化时，参数是客户区宽高</td></tr>
+          <tr><td><code>#:on-key</code></td><td><code>on-char</code> 收到的按键<strong>按下</strong>事件</td><td>需要键盘的课才用</td></tr>
+          <tr><td><code>#:on-key-up</code></td><td><code>on-char</code> 收到的按键<strong>松开</strong>事件</td><td>要判断“一直按住”时，和 <code>#:on-key</code> 配对使用（07.6）</td></tr>
+          <tr><td><code>#:on-focus</code></td><td>画布获得/失去键盘焦点</td><td>失焦时清空按键状态，避免粘键</td></tr>
+        </tbody>
+      </table>
+
+      <p>「为什么 <code>init</code> 要单独拿出来」是关键：GPU 对象必须在已经进入 GL 上下文之后才能创建，而上下文要等画布第一次绘制时才存在。所以 <code>make-window</code> 在第一次 <code>with-gl-context</code> 里先跑 <code>#:init</code>，成功后才开始每帧跑 <code>#:draw</code>。这和 01 里 <code>on-paint</code> 的 <code>inited?</code> 标志是同一件事。</p>
+
+      <p>想对照实现，直接打开 <a class="filelink" href="../code.html?f=lib/window.rkt">lib/window.rkt</a>：里面仍然是 01 的 <code>gl-config%</code>、<code>with-gl-context</code>、<code>swap-gl-buffers</code>、<code>on-size</code>、<code>on-char</code>，只是把重复部分固定下来。</p>
+
+      <h2 id="s1-code">完整代码</h2>
+
+      <p><a class="filelink" href="../code.html?f=01-window/window.rkt">01-window/window.rkt</a>，本节全部代码：</p>
+
+      <div class="code">
+        <div class="code-title">01-window/window.rkt<a class="srclink" href="../code.html?f=01-window/window.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">#lang glsl-opengl
+;; ============================================================
+;; 01 · 窗口 —— 先给 OpenGL 开一扇窗
+;; 运行：racket 01-window/window.rkt
+;; 上一课：00-intro.rkt
+;; ============================================================
+;; OpenGL 自己不提供窗口，它只往"某块画布"上画。所以先解决画布从哪来。
+;; 这一课就三件事：拿到画布、画一帧（清屏）、让它动起来。
+
+(require racket/class
+         racket/gui       ; 窗口系统：frame% canvas% timer% 等
+         racket/draw)     ; gl-config% 在这里
+
+;; ---- 窗口 --------------------------------------------------
+;; racket/gui 是事件驱动的：没有 while 主循环。你造好窗口、显示，
+;; 系统在"该重画""点了关闭"时回调你写的方法。
+;; frame% 是窗口类；这里派生一个子类，只为加一件事：点 X 时真正退出进程
+;; （默认只是把窗口藏起来）。
+(define gl-frame%
+  (class frame%
+    ;; on-close：点 X 时系统调的方法。
+    ;; define/augment：在父类实现之外追加动作（不替换）。
+    (define/augment (on-close)
+      (inner (void) on-close)   ; 先走父类原本的关闭流程
+      (exit 0))                 ; 再结束进程
+    (super-new)))               ; 调用父类构造器
+
+;; ---- GL 上下文 ---------------------------------------------
+;; OpenGL 没有全局状态：颜色、缓冲、着色器程序都住在一个叫"上下文"的环境里。
+;; 一块画布 = 一个上下文；所有 gl-* 命令都发给"当前上下文"。
+(define cfg (new gl-config%))
+;; core profile：只用现代可编程管线，不要旧式固定管线（和 shader 里的 330 core 对应）
+(send cfg set-legacy? #f)
+
+;; ---- GL 画布 -----------------------------------------------
+;; canvas% 加上 'gl 样式，就会在自己身上创建 GL 上下文。
+;;   'no-autoclear：别让系统自动擦背景，擦除我们自己用 gl-clear 控制。
+(define gl-canvas%
+  (class canvas%
+    ;; inherit：把父类的方法拿进来，子类里才能直接调用
+    (inherit with-gl-context swap-gl-buffers get-gl-client-size)
+
+    (define start-ms (current-inexact-monotonic-milliseconds))  ; 动画计时起点
+
+    ;; on-size：窗口尺寸变化时回调。
+    ;; 顶点坐标是标准坐标（-1..1），gl-viewport 决定它贴到窗口的哪块像素矩形；
+    ;; 参数是 (左下角 x, 左下角 y, 宽, 高)，这里铺满整个画布。
+    (define/override (on-size _w _h)
+      (with-gl-context
+       (lambda ()
+         (define-values (cw ch) (get-gl-client-size))
+         (gl-viewport 0 0 cw ch))))
+
+    ;; on-paint：系统需要重画时回调。所有绘制都写这里。
+    (define/override (on-paint)
+      ;; with-gl-context：先切到本画布的上下文，再执行 lambda。
+      ;; 不进去的话，gl-* 不知道命令该发给谁。
+      (with-gl-context
+       (lambda ()
+         ;; 用经过的时间做一个会"呼吸"的颜色。
+         ;; 用单调时钟，别数"画了多少帧"——定时器间隔只是约数，会漂移。
+         (define t (/ (- (current-inexact-monotonic-milliseconds) start-ms) 1000.0))
+
+         ;; gl-clear-color(r, g, b, a)：设清屏色，只"记住"，不画。
+         ;; gl-clear(mask)：真正擦除；gl-color-buffer-bit 表示颜色缓冲
+         ;; （它是位掩码常量，以后要同时擦深度缓冲时把掩码"按位或"起来）。
+         (gl-clear-color (* 0.5 (+ 1.0 (sin t)))
+                         (* 0.5 (+ 1.0 (sin (+ t 2.0))))
+                         (* 0.5 (+ 1.0 (sin (+ t 4.0))))
+                         1.0)
+         (gl-clear gl-color-buffer-bit)
+
+         ;; swap-gl-buffers：双缓冲翻页。我们画在"后台缓冲"，这一句整体翻到屏幕；
+         ;; 直接画前台会看到画到一半的样子（闪烁）。
+         (swap-gl-buffers))))
+
+    (super-new)))
+
+;; ---- 组装 --------------------------------------------------
+(define frame (new gl-frame% [label "01 窗口"] [width 640] [height 480]))
+(define canvas (new gl-canvas%
+                    [style '(gl no-autoclear)]
+                    [gl-config cfg]
+                    [parent frame]))
+(send frame show #t)
+
+;; ---- 让它动起来 --------------------------------------------
+;; 上面只在"需要重画时"画一帧。timer% 每 16ms 调一次回调，
+;; 回调里请求重绘，系统随后调 on-paint —— 定时器只请求，绘制永远在 on-paint。
+(define timer
+  (new timer% [interval 16]
+              [notify-callback (lambda () (send canvas refresh))]))
+</code></pre>
+      </div>
+
+      <h2 id="s1-exercise">试试看</h2>
+
+      <ol class="exercise">
+        <li>把 <code>timer%</code> 的 <code>interval</code> 从 <code>16</code> 改成 <code>500</code> → 重绘频率降到每半秒一次，颜色变化变成一格一格地跳，看起来又慢又卡。这也说明 <code>t</code> 是按真实时间算的：颜色该到哪儿到哪儿，只是画面更新得少了。</li>
+        <li>改三个 <code>sin</code> 的相位差，比如把 <code>(+ t 2.0)</code> 和 <code>(+ t 4.0)</code> 换成 <code>t</code>、<code>(+ t 1.0)</code> → 三条通道几乎同步变化，颜色从黑扫到白再回来，不再绕色环。</li>
+        <li>删掉 <code>(swap-gl-buffers)</code> 这一行 → 我们一直在后台缓冲上画，屏幕看的前台缓冲没被换过，画面要么停在最开始那一帧不动，要么在某些驱动上被撕成上下两半。</li>
+        <li>删掉 <code>on-size</code> 里的 <code>(gl-viewport 0 0 cw ch)</code>，然后拖拽窗口边框改尺寸 → 视口还是最初那块像素矩形，画面被拉伸（窗口变宽时横向扯长，变高时纵向扯长），而且它只占窗口左上角的一部分。</li>
+      </ol>
+
+      <h2 id="s1-summary">小结</h2>
+
+      <table class="spec">
+        <thead>
+          <tr>
+            <th>概念</th>
+            <th>一句话</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>frame%</code></td>
+            <td>窗口本身；派生一个子类只为在 <code>on-close</code> 里 <code>(exit 0)</code>，让进程真的退出</td>
+          </tr>
+          <tr>
+            <td><code>canvas%</code></td>
+            <td>窗口里的画布；style 里加 <code>'gl</code> 才有 GL 上下文，加 <code>'no-autoclear</code> 把擦除交给自己</td>
+          </tr>
+          <tr>
+            <td><code>timer%</code></td>
+            <td>定时请求重绘，不参与绘制；每 16ms 一轮靠它驱动</td>
+          </tr>
+          <tr>
+            <td>GL 上下文</td>
+            <td>一块画布一个上下文，所有 <code>gl-*</code> 命令发给「当前上下文」</td>
+          </tr>
+          <tr>
+            <td><code>with-gl-context</code></td>
+            <td>把绘制代码包起来，先切到本画布的上下文再执行</td>
+          </tr>
+          <tr>
+            <td><code>on-paint</code></td>
+            <td>系统需要重画时回调；所有绘制都写在这里</td>
+          </tr>
+          <tr>
+            <td>双缓冲</td>
+            <td>画在后台缓冲，<code>swap-gl-buffers</code> 整体翻页，避免看到画到一半的画面</td>
+          </tr>
+          <tr>
+            <td>viewport</td>
+            <td>决定标准坐标（-1..1）贴到画布上哪块像素矩形；尺寸变化要重设</td>
+          </tr>
+        </tbody>
+      </table>
+
+    </main>
+
+    <nav class="toc">
+      <b>本节目录</b>
+      <ol>
+        <li><a href="#s1-1">1.1 OpenGL 不提供窗口</a></li>
+        <li><a href="#s1-2">1.2 GL 上下文</a></li>
+        <li><a href="#s1-3">1.3 窗口与画布</a></li>
+        <li><a href="#s1-4">1.4 on-size 与 viewport</a></li>
+        <li><a href="#s1-5">1.5 on-paint 与双缓冲</a></li>
+        <li><a href="#s1-6">1.6 事件驱动 vs learnopengl 的 while 主循环</a></li>
+        <li><a href="#s1-7">1.7 让它动起来</a></li>
+        <li><a href="#s1-8">1.8 把窗口骨架收进 lib/window.rkt</a></li>
+        <li><a href="#s1-code">完整代码</a></li>
+        <li><a href="#s1-exercise">试试看</a></li>
+        <li><a href="#s1-summary">小结</a></li>
+      </ol>
+    </nav>
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="../00-intro/index.html">← 00 OpenGL 是什么</a>
+    <a class="next" href="../02-hello-triangle/index.html">02 第一个三角形 →</a>
+  </nav>
+
+  <footer class="site-footer">
+    <p>本教程参照 learnopengl.com 的章节节奏，代码用 racket-shader 写。纯静态站，源码可在浏览器里直接查看。</p>
+  </footer>
+
+</div>
+</body>
+</html>

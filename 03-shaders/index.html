@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>03 · 着色器 — study-opengl</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/highlight.js" defer></script>
+</head>
+<body>
+<div class="page">
+
+  <header class="site-header">
+    <a class="site-title" href="../index.html">study-opengl</a>
+    <nav class="crumbs"><a href="../index.html">课程</a> / <span>03 · 着色器</span></nav>
+  </header>
+
+  <div class="layout">
+    <main class="content">
+
+      <h1>着色器</h1>
+
+      <p class="goal">本节目标：一个程序里讲清四件事——GLSL 有哪些类型、两段着色器之间怎么传值、uniform 怎么从 CPU 送进来、一个顶点怎么带多个属性。跑起来应该看到三角形三个角分别是红、绿、蓝，中间自动渐变，整体亮度随时间脉动。</p>
+
+      <div class="run"><span class="prompt">$</span> racket 03-shaders/shaders.rkt</div>
+
+      <div class="note key">
+        <p><b>计算位置</b>顶点变换与颜色输出在 GPU 的两段 shader；<code>u-time</code> 由 CPU 每帧算好并上传。CPU 也能做同样的插值和乘法，但「按三角形覆盖的像素逐个插值」正是光栅化硬件的工作。数据流：CPU → uniform → 顶点着色器 → varying → 片元着色器 → 屏幕。</p>
+      </div>
+
+      <h2 id="s3-1">3.1 GLSL 的类型</h2>
+
+      <p>GLSL 的类型就三类，够用了：</p>
+
+      <ul>
+        <li>标量：<code>float</code>、<code>int</code>、<code>bool</code>；</li>
+        <li>向量：<code>vec-2</code>、<code>vec-3</code>、<code>vec-4</code>；</li>
+        <li>矩阵：<code>mat-2</code>、<code>mat-3</code>、<code>mat-4</code>。</li>
+      </ul>
+
+      <p>最容易踩的一条：<strong>浮点字面量必须写 <code>1.0</code>，不能写 <code>1</code></strong>。GLSL 不做隐式整浮转换，<code>1</code> 是 int，跟 <code>float</code> 混用编不过。所以位置、比例、颜色分量，一律写 <code>1.0</code>、<code>0.5</code> 这种带小数点的形式。</p>
+
+      <p>向量可以整体做算术（逐分量进行），也可以用 swizzle 取分量、重排、拼新向量：</p>
+
+      <div class="code">
+        <div class="code-title">示例（不是本课源码）：一个片元着色器里塞进标量和向量</div>
+        <pre><code class="lang-racket">(glsl (version 330 core)
+      (out vec-4 frag-color)
+      (define (main) void
+        ;; 标量：float / int / bool。浮点字面量必须写 1.0——写 1 是 int。
+        (float a 1.0)
+        ;; 向量：vec-2 / vec-3 / vec-4。整个向量可以一起算，逐分量进行。
+        (vec-3 c (* (vec-3 1.0 0.5 0.2) 0.5))
+        ;; swizzle：取分量、重排、拼新向量。
+        (set! frag-color (vec-4 (z c) (x c) (y c) a))))
+</code></pre>
+      </div>
+
+      <p><code>(z c)</code> 翻译出来是 <code>c.z</code>，<code>(xy c)</code> 是 <code>c.xy</code>；上面最后一行会变成 <code>frag-color = vec-4(c.z, c.x, c.y, a);</code>。想取哪几个分量、按什么顺序拼，都写在括号里。</p>
+
+      <h2 id="s3-2">3.2 (glsl …) 宏：S 表达式就是 GLSL</h2>
+
+      <p>racket-shader 的 <code>glsl</code> 是个宏：编译期把 S 表达式翻译成 GLSL 文本。规则很薄——括号就是调用，<code>(set! x v)</code> 是赋值，<code>(define (main) void …)</code> 是函数定义，<code>(layout (location 0) in vec-2 a-pos)</code> 这种声明同样写成括号。</p>
+
+      <p>本课顶点着色器在 <code>shaders.rkt</code> 里是这样写的：</p>
+
+      <div class="code">
+        <div class="code-title">03-shaders/shaders.rkt：vert-src（S 表达式）<a class="srclink" href="../code.html?f=03-shaders/shaders.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">(define vert-src
+  (glsl (version 330 core)
+        (layout (location 0) in vec-2 a-pos)
+        (layout (location 1) in vec-3 a-color)
+        ;; out：交给片元着色器。名字和类型要和那边的 in 一致，两段靠这个配对。
+        (out vec-3 v-color)
+        (define (main) void
+          (set! gl-position (vec-4 a-pos 0.0 1.0))
+          (set! v-color a-color))))       ; 原样交出去
+</code></pre>
+      </div>
+
+      <p>把 <code>(displayln (glsl-program-src vert-src))</code> 加进文件跑一遍，就能看到 GPU 真正收到的那段文本：</p>
+
+      <div class="code">
+        <div class="code-title">glsl-program-src 的输出：真正的 GLSL 文本</div>
+        <pre><code>#version 330 core
+layout(location = 0) in vec2 a_pos;
+layout(location = 1) in vec3 a_color;
+out vec3 v_color;
+void main() {
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+  v_color = a_color;
+}
+</code></pre>
+      </div>
+
+      <div class="note key">
+        <p><b>关键点</b>着色器编译报错时，报的行号是上面那份 GLSL 文本的行号，不是 S 表达式里的行号。找错时把它当「编译产物」看、对着它数行；S 表达式里那几行是 Racket 注释，翻译后不会留下。</p>
+      </div>
+
+      <h2 id="s3-3">3.3 in / out：阶段间传值与插值</h2>
+
+      <p>顶点着色器算完位置，还要把每个顶点的颜色交给片元着色器。交接靠一对 <code>out</code> / <code>in</code>：顶点着色器里声明 <code>(out vec-3 v-color)</code>，片元着色器里声明 <code>(in vec-3 v-color)</code>——<strong>名字和类型对上，值就传过去了</strong>。两段代码里相关的就是这几行：</p>
+
+      <div class="code">
+        <div class="code-title">03-shaders/shaders.rkt：顶点着色器的 out<a class="srclink" href="../code.html?f=03-shaders/shaders.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">        ;; out：交给片元着色器。名字和类型要和那边的 in 一致，两段靠这个配对。
+        (out vec-3 v-color)
+</code></pre>
+      </div>
+
+      <div class="code">
+        <div class="code-title">03-shaders/shaders.rkt：片元着色器的 in<a class="srclink" href="../code.html?f=03-shaders/shaders.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">(define frag-src
+  (glsl (version 330 core)
+        (in vec-3 v-color)
+        (uniform float u-time)
+        (out vec-4 frag-color)
+        (define (main) void
+          (float k (+ 0.5 (* 0.5 (sin u-time))))   ; sin 在 -1..1 → 变换成 0.5..1.0
+          (set! frag-color (vec-4 (* v-color k) 1.0)))))
+</code></pre>
+      </div>
+
+      <p>关键现象在片元这一侧：<code>v-color</code> 拿到的不是「某一个顶点的颜色」，而是<strong>插值后</strong>的颜色。三个顶点分别给红、绿、蓝，三角形内部就自动渐变——混合代码一行都不用写。</p>
+
+      <figure class="figure">
+        <svg viewBox="0 0 660 250" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>三角形三个顶点分别是红、绿、蓝：内部被分成三块半透明色块，每个像素的颜色由 GPU 按它到三个顶点的距离插值混合得到</title>
+
+          <polygon points="150,190 275,190 275,143.3 212.5,120" fill="#d64545" fill-opacity="0.35"/>
+          <polygon points="400,190 337.5,120 275,143.3 275,190" fill="#3fa34d" fill-opacity="0.35"/>
+          <polygon points="275,50 212.5,120 275,143.3 337.5,120" fill="#3b6fd4" fill-opacity="0.35"/>
+
+          <polygon points="150,190 400,190 275,50" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+
+          <circle cx="150" cy="190" r="6" fill="#d64545"/>
+          <circle cx="400" cy="190" r="6" fill="#3fa34d"/>
+          <circle cx="275" cy="50" r="6" fill="#3b6fd4"/>
+
+          <text x="138" y="206" text-anchor="end" font-size="13" fill="var(--muted)">红</text>
+          <text x="412" y="206" text-anchor="start" font-size="13" fill="var(--muted)">绿</text>
+          <text x="275" y="34" text-anchor="middle" font-size="13" fill="var(--muted)">蓝</text>
+
+          <text x="440" y="70" font-size="13" fill="var(--muted)">三个顶点各给一个颜色，</text>
+          <text x="440" y="92" font-size="13" fill="var(--muted)">三角形内部像素的颜色由 GPU</text>
+          <text x="440" y="114" font-size="13" fill="var(--muted)">按它到三个顶点的距离混合。</text>
+          <text x="440" y="146" font-size="13" fill="var(--accent)">插值由光栅化阶段完成，</text>
+          <text x="440" y="168" font-size="13" fill="var(--accent)">不是我们写的代码。</text>
+        </svg>
+        <figcaption class="figcaption">图 3-1 三个顶点的颜色在三角形内部被插值成渐变</figcaption>
+      </figure>
+
+      <p>这一步的算法是：光栅化阶段算出每个像素到三个顶点的距离权重（重心坐标），再按权重把三个顶点的 <code>v-color</code> 混起来。所以渐变是 GPU 免费送的，我们只负责在每个顶点上给出端点值。</p>
+
+      <h2 id="s3-4">3.4 uniform：整次绘制共用一份</h2>
+
+      <p>uniform 是第三种输入：它不属于任何顶点，一次 draw 调用里所有顶点、所有像素看到的是同一份值。CPU 每帧更新它，就能做出脉动、旋转这类整体变化。本课用它做亮度脉动：<code>(uniform float u-time)</code>。</p>
+
+      <p>先看 raw 版：uniform 在 GL 里是「先查位置，再按类型调用对应的 <code>gl-uniform-*</code>」。</p>
+
+      <div class="code">
+        <div class="code-title">raw OpenGL：uniform 的两步</div>
+        <pre><code class="lang-racket">;; 链接后查一次：名字必须是真正的 GLSL 名 u_time
+(define loc (gl-get-uniform-location program "u_time"))
+
+;; 每帧上传：float 用 gl-uniform-1f；vec3 是 gl-uniform-3f；mat4 是 gl-uniform-matrix-4fv
+(gl-use-program program)          ; uniform 作用在「当前 program」上
+(gl-uniform-1f loc t)</code></pre>
+      </div>
+
+      <p>本课从 02 的 raw 流程继续往前走，开始用两个便利层：<code>uniform-location</code> 只是 <code>gl-get-uniform-location</code> 的短名字；<code>uniform-set!</code> 则把「按类型选 <code>gl-uniform-*</code>、拆分量、校验长度」收进一个函数。用之前先知道它们背后是什么。</p>
+
+      <p>用 uniform 有三个要点：</p>
+
+      <ol>
+        <li><strong>位置查一次就存起来</strong>：<code>uniform-location</code> 在 program 链接好之后查，返回一个整数位置；找不到时返回 <code>-1</code>。</li>
+        <li><strong>上传必须在 <code>program-use</code> 之后</strong>：uniform 上传作用在「当前程序」上，不是作用在某个 program 对象上。</li>
+        <li><strong>类型写在参数里</strong>：<code>(uniform-set! loc 'float t)</code> 上传 1 个 float，<code>'int</code> 是 int，<code>'vec-3</code> / <code>'vec-4</code> 是 3 / 4 个 float，<code>'mat-4</code> 是 mat-4。<code>uniform-set!</code> 按类型符号自动选对底层的 <code>gl-uniform-*</code>；裸写法就是 <code>(gl-uniform-1f loc t)</code>（<code>'vec-3</code>→<code>gl-uniform-3f</code>、<code>'mat-4</code>→<code>(gl-uniform-matrix-4fv loc 1 #f m)</code>）。</li>
+      </ol>
+
+      <p><code>init</code> 里查位置（本课存进 <code>u-time-loc</code>，每帧直接用）：</p>
+
+      <div class="code">
+        <div class="code-title">03-shaders/shaders.rkt：init 的末尾<a class="srclink" href="../code.html?f=03-shaders/shaders.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">  (gl-bind-vertex-array 0)
+
+  ;; uniform 的位置在链接后查一次、存起来。找不到会返回 -1。
+  (set! u-time-loc (uniform-location program "u_time")))
+</code></pre>
+      </div>
+
+      <p><code>draw</code> 里上传：</p>
+
+      <div class="code">
+        <div class="code-title">03-shaders/shaders.rkt：draw 里每帧上传<a class="srclink" href="../code.html?f=03-shaders/shaders.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">  (program-use program)
+  ;; 上传 uniform：必须在 program-use 之后，因为它作用在"当前程序"上。
+  ;; uniform-set! 按类型符号自动选对 gl-uniform-*（'float→1f、'vec-3→3f、'mat-4→matrix-4fv）。
+  (uniform-set! u-time-loc 'float t)
+</code></pre>
+      </div>
+
+      <div class="note warn">
+        <p><b>坑</b>在 <code>program-use</code> 之前上传 uniform，会作用到当时绑着的那个程序上。这是<strong>静默错误</strong>：不报错、也不生效，画面看着就是「没变化」，只能回头查顺序。</p>
+      </div>
+
+      <h2 id="s3-5">3.5 多属性与交错布局</h2>
+
+      <p>上一课一个顶点只有位置。本课每个顶点是位置 <code>vec-2</code> + 颜色 <code>vec-3</code>，两样交错排在同一条缓冲里，一个顶点接着一个顶点：</p>
+
+      <p><code>x y r g b | x y r g b | x y r g b</code></p>
+
+      <figure class="figure">
+        <svg viewBox="0 0 660 200" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>交错布局的内存条带：三个顶点各占 5 个 float，依次是 x y r g b；一个顶点占 20 字节（stride），颜色要从顶点开头跳过 8 字节才开始</title>
+          <defs>
+            <marker id="mem-arrow-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+            </marker>
+            <marker id="mem-arrow-l" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 10 0 L 0 5 L 10 10 z" fill="var(--line)"/>
+            </marker>
+          </defs>
+
+          <text x="150" y="26" text-anchor="middle" font-size="13" fill="var(--muted)">顶点 0</text>
+          <text x="330" y="26" text-anchor="middle" font-size="13" fill="var(--muted)">顶点 1</text>
+          <text x="510" y="26" text-anchor="middle" font-size="13" fill="var(--muted)">顶点 2</text>
+
+          <rect x="60" y="36" width="540" height="50" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <rect x="312" y="36" width="36" height="50" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+
+          <line x1="96" y1="36" x2="96" y2="86" stroke="var(--line)" stroke-width="1"/>
+          <line x1="132" y1="36" x2="132" y2="86" stroke="var(--line)" stroke-width="1"/>
+          <line x1="168" y1="36" x2="168" y2="86" stroke="var(--line)" stroke-width="1"/>
+          <line x1="204" y1="36" x2="204" y2="86" stroke="var(--line)" stroke-width="1"/>
+          <line x1="276" y1="36" x2="276" y2="86" stroke="var(--line)" stroke-width="1"/>
+          <line x1="348" y1="36" x2="348" y2="86" stroke="var(--line)" stroke-width="1"/>
+          <line x1="384" y1="36" x2="384" y2="86" stroke="var(--line)" stroke-width="1"/>
+          <line x1="456" y1="36" x2="456" y2="86" stroke="var(--line)" stroke-width="1"/>
+          <line x1="492" y1="36" x2="492" y2="86" stroke="var(--line)" stroke-width="1"/>
+          <line x1="528" y1="36" x2="528" y2="86" stroke="var(--line)" stroke-width="1"/>
+          <line x1="564" y1="36" x2="564" y2="86" stroke="var(--line)" stroke-width="1"/>
+
+          <line x1="240" y1="36" x2="240" y2="86" stroke="var(--line)" stroke-width="1.5"/>
+          <line x1="420" y1="36" x2="420" y2="86" stroke="var(--line)" stroke-width="1.5"/>
+
+          <text x="78" y="67" text-anchor="middle" font-size="14" fill="var(--fg)">x</text>
+          <text x="114" y="67" text-anchor="middle" font-size="14" fill="var(--fg)">y</text>
+          <text x="150" y="67" text-anchor="middle" font-size="14" fill="var(--fg)">r</text>
+          <text x="186" y="67" text-anchor="middle" font-size="14" fill="var(--fg)">g</text>
+          <text x="222" y="67" text-anchor="middle" font-size="14" fill="var(--fg)">b</text>
+          <text x="258" y="67" text-anchor="middle" font-size="14" fill="var(--fg)">x</text>
+          <text x="294" y="67" text-anchor="middle" font-size="14" fill="var(--fg)">y</text>
+          <text x="330" y="67" text-anchor="middle" font-size="14" fill="var(--accent)">r</text>
+          <text x="366" y="67" text-anchor="middle" font-size="14" fill="var(--fg)">g</text>
+          <text x="402" y="67" text-anchor="middle" font-size="14" fill="var(--fg)">b</text>
+          <text x="438" y="67" text-anchor="middle" font-size="14" fill="var(--fg)">x</text>
+          <text x="474" y="67" text-anchor="middle" font-size="14" fill="var(--fg)">y</text>
+          <text x="510" y="67" text-anchor="middle" font-size="14" fill="var(--fg)">r</text>
+          <text x="546" y="67" text-anchor="middle" font-size="14" fill="var(--fg)">g</text>
+          <text x="582" y="67" text-anchor="middle" font-size="14" fill="var(--fg)">b</text>
+
+          <line x1="60" y1="86" x2="60" y2="118" stroke="var(--line)" stroke-width="1"/>
+          <line x1="240" y1="86" x2="240" y2="164" stroke="var(--line)" stroke-width="1"/>
+          <line x1="312" y1="86" x2="312" y2="164" stroke="var(--line)" stroke-width="1"/>
+
+          <line x1="60" y1="112" x2="240" y2="112" stroke="var(--line)" stroke-width="1.5" marker-start="url(#mem-arrow-l)" marker-end="url(#mem-arrow-r)"/>
+          <line x1="240" y1="158" x2="312" y2="158" stroke="var(--line)" stroke-width="1.5" marker-start="url(#mem-arrow-l)" marker-end="url(#mem-arrow-r)"/>
+
+          <text x="150" y="136" text-anchor="middle" font-size="13" fill="var(--fg)">stride = 20 字节</text>
+          <text x="276" y="182" text-anchor="middle" font-size="13" fill="var(--fg)">color-offset = 8 字节</text>
+        </svg>
+        <figcaption class="figcaption">图 3-2 交错布局：一个顶点 = x y r g b = 20 字节，颜色要从顶点开头跳过 8 字节才开始</figcaption>
+      </figure>
+
+      <p>交错布局要给 <code>gl-vertex-attrib-pointer</code> 两个数：<strong>步长</strong>（相邻两个顶点隔多少字节）和<strong>偏移</strong>（这个属性要从顶点开头跳过多少字节）。这两个数现在不写字面量，直接从布局算出来：</p>
+
+      <div class="code">
+        <div class="code-title">03-shaders/shaders.rkt：步长与偏移<a class="srclink" href="../code.html?f=03-shaders/shaders.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">  ;; 步长 = 一个顶点占多少字节；偏移 = 这个属性前面要跳过多少字节。
+  ;; 两个数都从布局算出来，不写字面量：以后把位置换成 vec-3，下面自动跟着对。
+  (define stride (shader-stride-bytes 'vec-2 'vec-3))   ; 2 + 3 = 5 个 float = 20 字节
+  (define color-offset (shader-byte-size 'vec-2))      ; 跳过位置那 2 个 float = 8 字节
+  (gl-vertex-attrib-pointer 0 2 gl-float #f stride 0)
+  (gl-enable-vertex-attrib-array 0)
+  (gl-vertex-attrib-pointer 1 3 gl-float #f stride color-offset)
+  (gl-enable-vertex-attrib-array 1)
+</code></pre>
+      </div>
+
+      <p><code>(shader-stride-bytes 'vec-2 'vec-3)</code> 把参数里的类型依次加起来：2 + 3 = 5 个 float = 20 字节。<code>(shader-byte-size 'vec-2)</code> 只算一个类型：2 个 float = 8 字节。好处是布局和读数用的是同一份事实——以后把位置换成 <code>vec-3</code>，把两个参数改成 <code>'vec-3 'vec-3</code> 和 <code>'vec-3</code>，步长和偏移自动跟着对，不会出现「改了数据忘了改魔数」造成的整体错位。</p>
+
+      <div class="note key">
+        <p><b>关键点</b>已实测 <code>(shader-stride-bytes 'vec-2 'vec-3)</code> 得到 20、<code>(shader-byte-size 'vec-2)</code> 得到 8，和手写字面量结果相同。用函数算不是为了省打字，是为了让步长、偏移和布局描述不会各说各话。</p>
+      </div>
+
+      <h2 id="s3-code">完整代码</h2>
+
+      <p><a class="filelink" href="../code.html?f=03-shaders/shaders.rkt">03-shaders/shaders.rkt</a>，本课全部代码（直接 <code>racket</code> 跑）：</p>
+
+      <div class="code">
+        <div class="code-title">03-shaders/shaders.rkt<a class="srclink" href="../code.html?f=03-shaders/shaders.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">#lang glsl-opengl
+;; ============================================================
+;; 03 · 着色器：类型、阶段间传值、uniform、多属性
+;; 运行：racket 03-shaders/shaders.rkt
+;; 上一课：02-hello-triangle/rectangle.rkt
+;; ============================================================
+;; 效果：三角形三个角红/绿/蓝，中间自动渐变，整体亮度随时间脉动。
+;; 四件事都在这一个程序里：GLSL 类型、out→in 传值、uniform、多个顶点属性。
+
+(require racket/class
+         racket/gui
+         "../lib/window.rkt")
+
+;; 顶点着色器。
+;; GLSL 的类型：float/int/bool 是标量，vec-2/vec-3/vec-4 是向量（浮点字面量要写 1.0）。
+;; 这里有两个输入属性：位置 a-pos（0 号槽）、颜色 a-color（1 号槽）。
+(define vert-src
+  (glsl (version 330 core)
+        (layout (location 0) in vec-2 a-pos)
+        (layout (location 1) in vec-3 a-color)
+        ;; out：交给片元着色器。名字和类型要和那边的 in 一致，两段靠这个配对。
+        (out vec-3 v-color)
+        (define (main) void
+          (set! gl-position (vec-4 a-pos 0.0 1.0))
+          (set! v-color a-color))))       ; 原样交出去
+
+;; 片元着色器。
+;; v-color 拿到的是"插值后"的颜色：三个顶点分别红/绿/蓝，GPU 按距离混合，
+;; 于是三角形中间自动渐变——混合代码一行都不用写。
+;; u-time 是 uniform：整个绘制共用一份，由 CPU 每帧更新（这里用来做亮度脉动）。
+(define frag-src
+  (glsl (version 330 core)
+        (in vec-3 v-color)
+        (uniform float u-time)
+        (out vec-4 frag-color)
+        (define (main) void
+          (float k (+ 0.5 (* 0.5 (sin u-time))))   ; sin 在 -1..1 → 变换成 0.5..1.0
+          (set! frag-color (vec-4 (* v-color k) 1.0)))))
+
+;; 03 开始使用 uniform 便利层：uniform-location 查位置，uniform-set! 按类型上传。
+;; 对应的 raw 两步（gl-get-uniform-location + gl-uniform-*）见教程 3.4。
+;;
+;; 顶点数据：每个顶点 = 位置(vec-2) + 颜色(vec-3)，交错排成一条：
+;;   x y r g b | x y r g b | x y r g b
+(define vertex-data
+  (concat-vecs (vec-2 -0.6 -0.5) (vec-3 1.0 0.0 0.0)    ; 红
+               (vec-2  0.6 -0.5) (vec-3 0.0 1.0 0.0)    ; 绿
+               (vec-2  0.0  0.6) (vec-3 0.0 0.0 1.0)))  ; 蓝
+
+(define program #f)
+(define vao #f)
+(define u-time-loc #f)
+
+(define (init)
+  (set! program (build-program (gl-vertex-shader vert-src)
+                               (gl-fragment-shader frag-src)))
+
+  (set! vao (vertex-array-new))
+  (gl-bind-vertex-array vao)
+  (define vbo (buffer-new))
+  (gl-bind-buffer gl-array-buffer vbo)
+  (buffer-upload gl-array-buffer vertex-data gl-static-draw)
+
+  ;; 步长 = 一个顶点占多少字节；偏移 = 这个属性前面要跳过多少字节。
+  ;; 两个数都从布局算出来，不写字面量：以后把位置换成 vec-3，下面自动跟着对。
+  (define stride (shader-stride-bytes 'vec-2 'vec-3))   ; 2 + 3 = 5 个 float = 20 字节
+  (define color-offset (shader-byte-size 'vec-2))      ; 跳过位置那 2 个 float = 8 字节
+  (gl-vertex-attrib-pointer 0 2 gl-float #f stride 0)
+  (gl-enable-vertex-attrib-array 0)
+  (gl-vertex-attrib-pointer 1 3 gl-float #f stride color-offset)
+  (gl-enable-vertex-attrib-array 1)
+
+  (gl-bind-vertex-array 0)
+
+  ;; uniform 的位置在链接后查一次、存起来。找不到会返回 -1。
+  (set! u-time-loc (uniform-location program "u_time")))
+
+(define (draw)
+  (define t (/ (current-inexact-monotonic-milliseconds) 1000.0))
+
+  (gl-clear-color 0.10 0.12 0.20 1.0)
+  (gl-clear gl-color-buffer-bit)
+
+  (program-use program)
+  ;; 上传 uniform：必须在 program-use 之后，因为它作用在"当前程序"上。
+  ;; uniform-set! 按类型符号自动选对 gl-uniform-*（'float→1f、'vec-3→3f、'mat-4→matrix-4fv）。
+  ;; 裸写法： (gl-uniform-1f u-time-loc t)；uniform-set! 只是按类型符号帮你选函数。
+  (uniform-set! u-time-loc 'float t)
+
+  (gl-bind-vertex-array vao)
+  (gl-draw-arrays gl-triangles 0 3)
+  (gl-bind-vertex-array 0))
+
+(define-values (frame canvas)
+  (make-window #:title "03 着色器"
+               #:init init
+               #:draw draw))
+(send frame show #t)
+
+;; uniform 每帧在变，需要定时器不断请求重绘
+(define timer
+  (new timer% [interval 16]
+              [notify-callback (lambda () (send canvas refresh))]))
+</code></pre>
+      </div>
+
+      <h2 id="s3-exercise">试试看</h2>
+
+      <ol class="exercise">
+        <li>把片元着色器里的 <code>k</code> 换成 <code>(* 0.5 (+ 1.0 (sin (* u-time 3.0))))</code>：脉动变快（<code>u-time</code> 前面乘了 3）。</li>
+        <li>给顶点加第三个属性：用一个 <code>float</code> 控制每个顶点的亮度。要同时改三处——着色器里多一个 <code>(layout (location 2) in float aBright)</code>、<code>vertex-data</code> 里每个顶点多一个数、<code>gl-vertex-attrib-pointer</code> 里多描述一个槽（步长用 <code>(shader-stride-bytes 'vec-2 'vec-3 'float)</code> 重算，别手写）。</li>
+        <li>把 <code>color-offset</code> 故意写成 <code>0</code>：颜色会从位置那几个字节开始读，画面颜色错乱；改回来对比一下。</li>
+        <li>把 <code>(set! v-color a-color)</code> 换成 <code>(set! v-color (vec-3 1.0 1.0 1.0))</code>：渐变消失，三角形变成一片白（亮度脉动还在）。</li>
+      </ol>
+
+      <h2 id="s3-summary">小结</h2>
+
+      <table class="spec">
+        <thead>
+          <tr>
+            <th>概念</th>
+            <th>一句话</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>GLSL 类型</td>
+            <td><code>float</code>/<code>int</code>/<code>bool</code>、<code>vec-2</code>/<code>vec-3</code>/<code>vec-4</code>、<code>mat-2</code>/<code>mat-3</code>/<code>mat-4</code>；浮点字面量一律写 <code>1.0</code></td>
+          </tr>
+          <tr>
+            <td><code>glsl</code> 宏</td>
+            <td>编译期把 S 表达式翻译成 GLSL 文本：括号即调用、<code>set!</code> 即赋值；用 <code>glsl-program-src</code> 能看到产物</td>
+          </tr>
+          <tr>
+            <td>in / out 与插值</td>
+            <td>顶点着色器的 <code>out</code> 与片元着色器的 <code>in</code> 按名字 + 类型配对；中间的值由光栅化阶段插值</td>
+          </tr>
+          <tr>
+            <td>uniform</td>
+            <td>整次绘制共用一份，由 CPU 上传；location 链接后查一次，上传要在 <code>program-use</code> 之后</td>
+          </tr>
+          <tr>
+            <td>交错布局</td>
+            <td>一个顶点 = 若干属性首尾相接；<code>gl-vertex-attrib-pointer</code> 的步长和偏移决定从缓冲的哪里切</td>
+          </tr>
+          <tr>
+            <td><code>shader-stride-bytes</code> / <code>shader-byte-size</code></td>
+            <td>从布局类型算出步长与偏移的字节数，替代手写魔数</td>
+          </tr>
+        </tbody>
+      </table>
+
+    </main>
+
+    <nav class="toc">
+      <b>本节目录</b>
+      <ol>
+        <li><a href="#s3-1">3.1 GLSL 的类型</a></li>
+        <li><a href="#s3-2">3.2 (glsl …) 宏：S 表达式就是 GLSL</a></li>
+        <li><a href="#s3-3">3.3 in / out：阶段间传值与插值</a></li>
+        <li><a href="#s3-4">3.4 uniform：整次绘制共用一份</a></li>
+        <li><a href="#s3-5">3.5 多属性与交错布局</a></li>
+        <li><a href="#s3-code">完整代码</a></li>
+        <li><a href="#s3-exercise">试试看</a></li>
+        <li><a href="#s3-summary">小结</a></li>
+      </ol>
+    </nav>
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="../02-hello-triangle/index.html">← 02 第一个三角形</a>
+    <a class="next" href="../04-textures/index.html">04 纹理 →</a>
+  </nav>
+
+  <footer class="site-footer">
+    <p>本教程参照 learnopengl.com 的章节节奏，代码用 racket-shader 写。纯静态站，源码可在浏览器里直接查看。</p>
+  </footer>
+
+</div>
+</body>
+</html>

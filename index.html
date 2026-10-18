@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>study-opengl · 用 Racket 学 OpenGL</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/highlight.js" defer></script>
+</head>
+<body>
+<div class="page">
+
+  <header class="site-header">
+    <a class="site-title" href="index.html">study-opengl</a>
+    <nav class="crumbs"><span>首页</span></nav>
+  </header>
+
+  <div class="layout">
+    <main class="content">
+
+      <h1>用 Racket 学 OpenGL</h1>
+
+      <div class="goal">
+        <p>这套教程按 learnopengl 的节奏讲 OpenGL，代码全部用 Racket 写，GLSL 用 racket-shader 这个 DSL 写成 S 表达式。</p>
+        <p>每节课就是一个目录：一页 HTML 教程，加一份可以直接 <code>racket</code> 跑起来的源码。</p>
+      </div>
+
+      <h2 id="before">开始之前</h2>
+
+      <ul>
+        <li>Racket v8 或更新（作者实测 v9.3 [cs]，Linux）。</li>
+        <li>安装两个包：<code>raco pkg install racket-shader racket-shader-opengl</code>（跟源码改时用 <code>--link &lt;源码目录&gt;</code>）。<code>racket-shader</code> 提供 <code>#lang glsl</code> 与 <code>(glsl ...)</code> 宏（集合名是 <code>glsl</code>），<code>racket-shader-opengl</code> 提供 <code>#lang glsl-opengl</code> 并叠加 <code>gl-*</code> 与编译/链接；教程用后者。依赖 <code>opengl</code> 和 <code>gui-lib</code> 会自动装上。<br><b>包名 ≠ 语言名</b>：<code>raco pkg</code> 认的是 <code>racket-shader</code> / <code>racket-shader-opengl</code>，<code>#lang</code> 认的是集合名 <code>glsl</code> / <code>glsl-opengl</code>。</li>
+        <li>能开图形窗口：Linux 下要有 <code>DISPLAY</code>，WSL 需要 WSLg。</li>
+      </ul>
+
+      <p>装好之后先跑第 0 课（不开窗口，只在终端打印课程顺序）：</p>
+
+      <div class="run"><span class="prompt">$</span> racket 00-intro/intro.rkt</div>
+
+      <p><b>阅读节奏</b>：02 会先解释 <code>lib/window.rkt</code>，再把 raw OpenGL 的编译/缓冲/VAO 流程走一遍，然后才介绍 <code>build-program</code> / <code>buffer-new</code> 这些便利层；09 会把顶点布局和 uniform setter 的裸写法再展开一次；13 拆开「文字 → 纹理 → 3D quad」，14 再把「文件 → 顶点/索引 → VBO/EBO」走一遍，15 把精灵图、billboard 和 HD 场景组合成一个完整画面。正式章节讲 API 和用例，复习章节（R1–R4）再把 API 与「计算放在哪」重新对齐；R4 会用 CPU 把 14 课的茶壶完整画一遍。便利层只是「少写、防错」，不是 OpenGL 的新规则。</p>
+
+      <p><b>最短路线</b>：00 → 01 → 02 → 03 → 04 先把 2D 画出来；05 → 06 → 07 进 3D；08 → 09 → 10 → 11 → 12 学光照；13 / 14 / 15 是额外主题；15 是把前面内容拼成一个 HD 场景，可以最后做。每段结束做对应复习（04 后 R1、07 后 R2、11 后 R3、14 后 R4）。</p>
+
+
+      <h2 id="pipeline">渲染管线</h2>
+
+      <p>后面这几节课讲的其实就是这一条主线：CPU 端把顶点数据准备好，剩下的都交给 GPU。</p>
+
+      <figure class="figure">
+        <svg viewBox="0 0 724 88" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title>OpenGL 渲染管线主线：顶点数据 → 顶点着色器 → 图元装配 → 光栅化 → 片元着色器 → 屏幕</title>
+          <defs>
+            <marker id="pipe-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+            </marker>
+          </defs>
+
+          <rect x="8" y="18" width="76" height="40" rx="8" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="46" y="43" text-anchor="middle" font-size="14" fill="var(--fg)">顶点数据</text>
+
+          <rect x="124" y="18" width="120" height="40" rx="8" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <text x="184" y="43" text-anchor="middle" font-size="14" fill="var(--accent)">[顶点着色器]</text>
+          <text x="184" y="76" text-anchor="middle" font-size="13" fill="var(--accent)">可编程</text>
+
+          <rect x="284" y="18" width="76" height="40" rx="8" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="322" y="43" text-anchor="middle" font-size="14" fill="var(--fg)">图元装配</text>
+
+          <rect x="400" y="18" width="64" height="40" rx="8" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="432" y="43" text-anchor="middle" font-size="14" fill="var(--fg)">光栅化</text>
+
+          <rect x="504" y="18" width="120" height="40" rx="8" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+          <text x="564" y="43" text-anchor="middle" font-size="14" fill="var(--accent)">[片元着色器]</text>
+          <text x="564" y="76" text-anchor="middle" font-size="13" fill="var(--accent)">可编程</text>
+
+          <rect x="664" y="18" width="52" height="40" rx="8" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+          <text x="690" y="43" text-anchor="middle" font-size="14" fill="var(--fg)">屏幕</text>
+
+          <line x1="88" y1="38" x2="121" y2="38" stroke="var(--line)" stroke-width="1.5" marker-end="url(#pipe-arrow)"/>
+          <line x1="248" y1="38" x2="281" y2="38" stroke="var(--line)" stroke-width="1.5" marker-end="url(#pipe-arrow)"/>
+          <line x1="364" y1="38" x2="397" y2="38" stroke="var(--line)" stroke-width="1.5" marker-end="url(#pipe-arrow)"/>
+          <line x1="468" y1="38" x2="501" y2="38" stroke="var(--line)" stroke-width="1.5" marker-end="url(#pipe-arrow)"/>
+          <line x1="628" y1="38" x2="661" y2="38" stroke="var(--line)" stroke-width="1.5" marker-end="url(#pipe-arrow)"/>
+        </svg>
+        <figcaption class="figcaption">图 0-1 OpenGL 渲染管线主线</figcaption>
+      </figure>
+
+      <div class="note key">
+        <p><b>关键点</b>方括号里那两段是你写的程序，叫 shader，用 GLSL 写；其余阶段是 GPU 固定行为，只能设参数不能改代码。</p>
+      </div>
+
+      <h2 id="lessons">课程目录</h2>
+
+      <div class="card-grid">
+
+        <article class="card">
+          <div class="card-num">00</div>
+          <h3 class="card-title"><a href="00-intro/index.html">OpenGL 是什么</a></h3>
+          <p class="card-desc">CPU 下命令、GPU 并行算；状态机、对象、管线主线。</p>
+          <div class="card-run">racket 00-intro/intro.rkt</div>
+        </article>
+
+        <article class="card">
+          <div class="card-num">01</div>
+          <h3 class="card-title"><a href="01-window/index.html">开一扇窗口</a></h3>
+          <p class="card-desc">OpenGL 不提供窗口；上下文、双缓冲、事件驱动的主循环，以及 lib/window.rkt 的封装。</p>
+          <div class="card-run">racket 01-window/window.rkt</div>
+        </article>
+
+        <article class="card">
+          <div class="card-num">02</div>
+          <h3 class="card-title"><a href="02-hello-triangle/index.html">第一个三角形</a></h3>
+          <p class="card-desc">先走 raw OpenGL 的编译/缓冲/VAO 流程，再用便利层；VBO / VAO / EBO。</p>
+          <div class="card-run">racket 02-hello-triangle/triangle.rkt</div>
+        </article>
+
+        <article class="card">
+          <div class="card-num">03</div>
+          <h3 class="card-title"><a href="03-shaders/index.html">着色器</a></h3>
+          <p class="card-desc">GLSL 类型、阶段间传值、uniform 的 raw 两步与便利层、多属性交错布局。</p>
+          <div class="card-run">racket 03-shaders/shaders.rkt</div>
+        </article>
+
+        <article class="card">
+          <div class="card-num">04</div>
+          <h3 class="card-title"><a href="04-textures/index.html">纹理</a></h3>
+          <p class="card-desc">UV 采样、环绕、过滤、mipmap、纹理单元。</p>
+          <div class="card-run">racket 04-textures/textures.rkt</div>
+        </article>
+
+        <article class="card">
+          <div class="card-num">05</div>
+          <h3 class="card-title"><a href="05-transformations/index.html">变换</a></h3>
+          <p class="card-desc">平移/旋转/缩放都是乘矩阵；组合顺序从右往左作用。</p>
+          <div class="card-run">racket 05-transformations/transform.rkt</div>
+        </article>
+
+        <article class="card">
+          <div class="card-num">06</div>
+          <h3 class="card-title"><a href="06-coordinate-systems/index.html">坐标系</a></h3>
+          <p class="card-desc">model/view/projection 三个空间；深度缓冲与透视除法。</p>
+          <div class="card-run">racket 06-coordinate-systems/coordinates.rkt</div>
+        </article>
+
+        <article class="card">
+          <div class="card-num">07</div>
+          <h3 class="card-title"><a href="07-camera/index.html">相机</a></h3>
+          <p class="card-desc">look-at 三基推导；绕圈、自由相机、按键状态与连续移动。</p>
+          <div class="card-run">racket 07-camera/camera.rkt</div>
+        </article>
+
+        <article class="card">
+          <div class="card-num">08</div>
+          <h3 class="card-title"><a href="08-colors/index.html">颜色</a></h3>
+          <p class="card-desc">看到的颜色 = 物体色 × 光色；lamp shader 与双 program。</p>
+          <div class="card-run">racket 08-colors/colors.rkt</div>
+        </article>
+
+        <article class="card">
+          <div class="card-num">09</div>
+          <h3 class="card-title"><a href="09-basic-lighting/index.html">基础光照</a></h3>
+          <p class="card-desc">点积、Lambert 漫反射、Phong 高光的推导；法线与 normal matrix。</p>
+          <div class="card-run">racket 09-basic-lighting/basic-lighting.rkt</div>
+        </article>
+
+        <article class="card">
+          <div class="card-num">10</div>
+          <h3 class="card-title"><a href="10-lighting-maps/index.html">光照贴图</a></h3>
+          <p class="card-desc">diffuse map 与 specular map：贴图也是开关。</p>
+          <div class="card-run">racket 10-lighting-maps/lighting-maps.rkt</div>
+        </article>
+
+        <article class="card">
+          <div class="card-num">11</div>
+          <h3 class="card-title"><a href="11-light-casters/index.html">光的种类</a></h3>
+          <p class="card-desc">directional/point/spot；距离衰减公式与聚光锥的余弦判定。</p>
+          <div class="card-run">racket 11-light-casters/spot.rkt</div>
+        </article>
+
+        <article class="card">
+          <div class="card-num">12</div>
+          <h3 class="card-title"><a href="12-multiple-lights/index.html">多光源</a></h3>
+          <p class="card-desc">struct 数组与 for 循环累加；成本随灯数线性。</p>
+          <div class="card-run">racket 12-multiple-lights/multiple-lights.rkt</div>
+        </article>
+
+        <article class="card">
+          <div class="card-num">13</div>
+          <h3 class="card-title"><a href="13-text-3d/index.html">3D 文字</a></h3>
+          <p class="card-desc">raylib 的 font atlas 思路；文字纹理 + billboard quad；拓展到字形 atlas / SDF。</p>
+          <div class="card-run">racket 13-text-3d/text-3d.rkt</div>
+        </article>
+
+        <article class="card">
+          <div class="card-num">14</div>
+          <h3 class="card-title"><a href="14-model-loading/index.html">模型加载</a></h3>
+          <p class="card-desc">OBJ → 顶点/索引 → VBO/EBO；法线、UV、材质与 glTF/骨骼拓展。</p>
+          <div class="card-run">racket 14-model-loading/model-loading.rkt</div>
+        </article>
+
+        <article class="card">
+          <div class="card-num">15</div>
+          <h3 class="card-title"><a href="15-sprite-atlas/index.html">精灵图与 HD 3D 场景</a></h3>
+          <p class="card-desc">4×4 精灵图、图集 UV、billboard、加法混合；1280×720 + 4× MSAA 的茶壶场景。</p>
+          <div class="card-run">racket 15-sprite-atlas/sprite-atlas.rkt</div>
+        </article>
+
+      </div>
+
+      <h2 id="review">复习章节</h2>
+
+      <p>正式章节随着用例讲 API；复习章节把 API 和「它触发的计算」重新对一遍，并给出 CPU 版 / GPU 版的同一公式。建议读完对应阶段后停一下，做一遍复习，再继续。</p>
+
+      <div class="card-grid">
+
+        <article class="card">
+          <div class="card-num">R1</div>
+          <h3 class="card-title"><a href="review/01-api-flow/index.html">API 与数据流</a></h3>
+          <p class="card-desc">02–04 的 API 重排：传数据 / 设状态 / 启动计算；API 本身不做矩阵和光照。</p>
+          <div class="card-run">racket review/01-api-flow/api-review.rkt</div>
+        </article>
+
+        <article class="card">
+          <div class="card-num">R2</div>
+          <h3 class="card-title"><a href="review/02-matrices/index.html">矩阵与计算位置</a></h3>
+          <p class="card-desc">05–07 的矩阵链路：CPU 算 vs GPU 顶点着色器算；同一公式、不同数据流。</p>
+          <div class="card-run">racket review/02-matrices/matrix-review.rkt</div>
+        </article>
+
+        <article class="card">
+          <div class="card-num">R3</div>
+          <h3 class="card-title"><a href="review/03-lighting/index.html">光照：CPU 还是 GPU</a></h3>
+          <p class="card-desc">08–11 的 Phong 公式：逐顶点 / 逐片元 / 离线烘焙，三种计算位置。</p>
+          <div class="card-run">racket review/03-lighting/lighting-review.rkt</div>
+        </article>
+
+        <article class="card">
+          <div class="card-num">R4</div>
+          <h3 class="card-title"><a href="review/04-cpu-renderer/index.html">用 CPU 走一遍管线</a></h3>
+          <p class="card-desc">不调用 gl-*，用 Racket 把 14 课的茶壶画出来；光栅化、深度测试、透视校正全都摊开。</p>
+          <div class="card-run">racket review/04-cpu-renderer/cpu-raster.rkt</div>
+        </article>
+
+      </div>
+
+      <h2 id="naming">命名约定</h2>
+
+      <p>代码里出现的名字分三类，认清了读起来就不会卡住。</p>
+
+      <table class="spec">
+        <thead>
+          <tr>
+            <th>名字</th>
+            <th>来自哪里</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>gl-array-buffer</code></td>
+            <td>OpenGL 内置常量的 Racket 改名</td>
+            <td>C 里写 <code>GL_ARRAY_BUFFER</code>，这个名字不是作者起的</td>
+          </tr>
+          <tr>
+            <td><code>vec-3</code> <code>mat-4</code> <code>shader-byte-size</code> <code>build-program</code></td>
+            <td>racket-shader + racket-shader-opengl</td>
+            <td>DSL 提供的类型和函数（<code>build-program</code> 在 OpenGL 层）</td>
+          </tr>
+          <tr>
+            <td><code>vertices</code> <code>program</code> <code>vao</code> <code>draw</code> <code>init</code></td>
+            <td>教程自己起的</td>
+            <td>读代码时可以先只看这些</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>教程里的 shader 和 Racket 代码统一使用 Racket 风格的 kebab-case：<code>gl-position</code>、<code>frag-color</code>、<code>u-model</code>、<code>vec-3</code>、<code>mat-4</code>。racket-shader 在生成 GLSL 时会把它们换成真正的 GLSL 拼写：<code>gl_Position</code>、<code>frag_color</code>、<code>u_model</code>、<code>vec3</code>、<code>mat4</code>。</p>
+
+      <div class="note warn">
+        <p><b>别把 <code>vec-3</code> 当成 <code>racket/math</code></b><code>vec-3</code> / <code>vec-4</code> / <code>mat-4</code> / <code>vx</code> / <code>vdot</code> 全部来自 <code>#lang glsl</code>（racket-shader），<code>racket/math</code> 只提供 <code>degrees->radians</code> 这类数学函数。<code>(require racket/math)</code> 不会给你 <code>vec-3</code>。<br>另外，带连字符的是<b>你写的 Racket 名字</b>；不带连字符的 <code>vec3</code> / <code>mat4</code> 是<b>生成后的 GLSL 文本</b>。DSL 也接受 <code>vec3</code>，但本教程统一写 <code>vec-3</code>，看到 <code>vec3</code> 就知道那段是 GLSL 原文。</p>
+      </div>
+
+      <div class="note key">
+        <p><b>关键点</b><code>#lang glsl-opengl</code> 就是一个普通的 Racket 模块，只是预先 require 好了 GLSL 全套 + OpenGL 层，所以在文件顶部写 <code>#lang glsl-opengl</code> 就能直接用 <code>glsl</code> / <code>vec-3</code> / <code>gl-*</code> / <code>buffer-new</code>。<br>只写 GLSL、不碰 OpenGL 时用 <code>#lang glsl</code>（不拉进 opengl）。</p>
+      </div>
+
+      <h2 id="code-map">代码地图</h2>
+
+      <p>每课目录里只放本课新增的代码；窗口、矩阵、OBJ 解析这些反复用的东西收在 <code>lib/</code>。它们不是黑盒，需要时可以打开读——里面用的还是同一套 <code>gl-*</code> 和 <code>mat-4</code>。</p>
+
+      <table class="spec">
+        <thead><tr><th>文件</th><th>作用</th><th>第一次出现</th></tr></thead>
+        <tbody>
+          <tr><td><code>lib/window.rkt</code></td><td>窗口、GL 上下文、viewport、<code>on-paint</code>、定时器、可选的 <code>#:multisample</code> / <code>on-size</code> / <code>on-key</code> / <code>on-key-up</code> / <code>on-focus</code></td><td>01</td></tr>
+          <tr><td><code>lib/matrix.rkt</code></td><td><code>vec-3</code> / <code>mat-4</code> 运算、平移/旋转/缩放、look-at、perspective、法线矩阵</td><td>05</td></tr>
+          <tr><td><code>lib/text-texture.rkt</code></td><td>用 <code>racket/draw</code> 把整串文字画成 RGBA bitmap</td><td>13</td></tr>
+          <tr><td><code>lib/obj.rkt</code></td><td>极简 OBJ 解析：位置/法线/UV/面</td><td>14</td></tr>
+          <tr><td><code>lib/sprite-sheet.rkt</code></td><td>加载精灵图：PNG → RGBA 纹理，记录列数/行数/单帧尺寸</td><td>15</td></tr>
+          <tr><td><code>assets/sprites/make-sprites.rkt</code></td><td>用 <code>racket/draw</code> 生成 4×4 的 λ 符印精灵图</td><td>15</td></tr>
+          <tr><td><code>compare/raw-triangle.rkt</code></td><td>不用 racket-shader 的 raw OpenGL 对照</td><td>02</td></tr>
+        </tbody>
+      </table>
+
+      <h2 id="compare">对照：不用 racket-shader 会怎样</h2>
+
+      <p><a class="filelink" href="code.html?f=compare/raw-triangle.rkt">compare/raw-triangle.rkt</a> 是同一个三角形只用 <code>opengl</code> 包写的版本。建议在 02.0 先读它：看清 raw 的编译、缓冲、VAO 流程之后，再看 02 里用便利层写的版本，就能知道每个便利调用替掉了哪几步。</p>
+
+      <h2 id="refs">参考与取舍</h2>
+
+      <p>这套教程不是从零发明讲法。主骨架来自 learnopengl，另外几份参考分别补它讲得不够简、或 API 查起来不方便的地方。读的时候可以交叉对照，但不要同时啃三份教程。</p>
+
+      <table class="spec">
+        <thead><tr><th>参考</th><th>用来对照什么</th><th>本教程怎么取舍</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><a href="https://learnopengl.com/">learnopengl</a> / <a href="https://learnopengl-cn.github.io/">中文版</a></td>
+            <td>章节顺序、每个效果的完整做法</td>
+            <td>保留 Getting started → Lighting → Model loading 的主线；把 C++/GLFW 换成 Racket/GUI，把 raw GL 和便利层分开讲</td>
+          </tr>
+          <tr>
+            <td><a href="https://docs.gl/">docs.gl</a></td>
+            <td>单个 GL 函数的签名、参数、常量</td>
+            <td>不抄 API 大全；遇到没展开的函数，按 02 的命名规则查</td>
+          </tr>
+          <tr>
+            <td><a href="https://webglfundamentals.org/">WebGL Fundamentals</a></td>
+            <td>管线、状态、坐标变换的直观解释</td>
+            <td>借用「先讲数据流、再讲 API」的讲法；不引入 WebGL/JS 细节</td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/ssloy/tinyrenderer">tinyrenderer</a></td>
+            <td>不用 GPU 时，光栅化、深度、纹理到底在算什么</td>
+            <td>只在 R1–R4 的 CPU 对照里用这个视角，不把教程变成软件渲染器</td>
+          </tr>
+          <tr>
+            <td><a href="https://ogldev.org/">OGLdev</a></td>
+            <td>look-at、投影、法线矩阵的推导</td>
+            <td>保留推导，但把矩阵约定和 Racket 代码对齐</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3 id="refs-map">章节对照</h3>
+
+      <p>想查某个效果的另一种写法时，按这张表跳到 learnopengl 对应章节即可；两边概念同名，代码不同。</p>
+
+      <table class="spec">
+        <thead><tr><th>本教程</th><th>learnopengl 对应</th><th>备注</th></tr></thead>
+        <tbody>
+          <tr><td>00–01</td><td>Getting started / Creating a window</td><td>本教程把「OpenGL 是什么」和「窗口」拆成两课</td></tr>
+          <tr><td>02</td><td>Hello Triangle</td><td>先 raw 后便利层，VBO/VAO/EBO 一次讲完</td></tr>
+          <tr><td>03</td><td>Shaders</td><td>用 racket-shader 的 S 表达式代替 GLSL 字符串</td></tr>
+          <tr><td>04</td><td>Textures</td><td>用代码生成棋盘图，不依赖图片文件</td></tr>
+          <tr><td>05–07</td><td>Transformations / Coordinate Systems / Camera</td><td>矩阵推导保留，代码用 lib/matrix.rkt</td></tr>
+          <tr><td>08–12</td><td>Colors / Basic Lighting / Lighting Maps / Light Casters / Multiple Lights</td><td>同一套 Phong 公式逐步加项</td></tr>
+          <tr><td>13</td><td>Text Rendering</td><td>用 racket/draw 生成字形纹理，不接 FreeType</td></tr>
+          <tr><td>14</td><td>Model Loading</td><td>手写 OBJ 解析，不接 Assimp</td></tr>
+          <tr><td>15</td><td>Text Rendering / Advanced 综合</td><td>精灵图、billboard、加法混合、MSAA；把前面内容拼成一个 HD 场景</td></tr>
+        </tbody>
+      </table>
+
+      <h2 id="troubleshooting">排错速查</h2>
+
+      <p>新手最常遇到的不是「公式不会」，而是「窗口开了但什么都没有」。先按症状查这张表，再回去看对应章节。</p>
+
+      <table class="spec">
+        <thead><tr><th>症状</th><th>先查什么</th><th>常见原因</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>窗口不出现 / 一启动就退出</td>
+            <td><code>DISPLAY</code>、WSLg、终端报错</td>
+            <td>没有图形环境；Racket/GUI 依赖没装好；程序在 <code>show</code> 之前就抛异常</td>
+          </tr>
+          <tr>
+            <td>窗口在，但只有清屏色</td>
+            <td>shader 编译/链接日志、<code>program-use</code>、<code>gl-bind-vertex-array</code>、draw 数量</td>
+            <td>shader 没编译过；VAO 没绑；属性槽没 enable；顶点数或索引数写错</td>
+          </tr>
+          <tr>
+            <td>三角形/立方体整个消失</td>
+            <td>顶点坐标、<code>w</code>、投影矩阵、背面剔除</td>
+            <td>坐标超出裁剪范围；<code>w</code> 写错；近/远平面把物体裁掉；绕序和剔除方向相反</td>
+          </tr>
+          <tr>
+            <td>3D 遮挡关系不对</td>
+            <td><code>gl-depth-test</code>、清屏掩码</td>
+            <td>没开深度测试；清屏只擦了颜色没擦深度；深度比较函数设反</td>
+          </tr>
+          <tr>
+            <td>纹理全黑 / 全白</td>
+            <td>mipmap、纹理单元、sampler uniform、UV</td>
+            <td>用了 mipmap 过滤却没 <code>gl-generate-mipmap</code>；没 <code>gl-active-texture</code> 就绑纹理；sampler 没指向正确单元</td>
+          </tr>
+          <tr>
+            <td>光照一块黑一块亮，方向不对</td>
+            <td>法线、normal matrix、<code>l</code> 的方向、<code>1.0</code> 字面量</td>
+            <td>法线没归一化；非等比缩放没用逆转置；<code>lightPos - fragPos</code> 写成反方向；GLSL 里写了 <code>1</code> 而不是 <code>1.0</code></td>
+          </tr>
+          <tr>
+            <td>相机一转就崩 / 画面 NaN</td>
+            <td><code>look-at</code> 的 <code>up</code>、pitch 钳制</td>
+            <td>forward 与 up 平行，叉乘得零向量；pitch 到了 ±90°</td>
+          </tr>
+          <tr>
+            <td>点 X 窗口关了，进程还在</td>
+            <td><code>on-close</code></td>
+            <td>默认只隐藏窗口；需要派生 <code>frame%</code> 并 <code>(exit 0)</code>（01 课）</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 id="next">接下来学什么</h2>
+
+      <p>本教程停在「能加载模型、能算 Phong 光照，并把精灵图、billboard 和混合组成一个 HD 场景」。再往下走，建议一次只加一个目标，不要把新概念堆在一起：</p>
+
+      <ul>
+        <li><b>Framebuffer / render-to-texture</b>：把场景画到一张纹理，再做后处理、阴影贴图、反射。这是很多高级效果的地基。</li>
+        <li><b>Shadow mapping</b>：从光源视角画一遍深度，再从相机视角比较。先理解深度纹理，再写代码。</li>
+        <li><b>Normal mapping / PBR</b>：前者让平面假装有凹凸，后者换掉 Phong 的经验公式。都需要先熟悉切线空间和纹理采样。</li>
+        <li><b>Instancing</b>：同一份顶点画成千上万个物体，减少 draw call。</li>
+        <li><b>MSAA / gamma / HDR</b>：画面「有锯齿」「颜色发灰」「高光死白」时再学，效果立竿见影。</li>
+        <li><b>Compute shader</b>：通用并行计算，和图形管线是另一条线。</li>
+      </ul>
+
+      <p>对应 learnopengl 的 Advanced 部分。建议每学一个，都回到本教程的 R1–R4 复习页问一遍：这个公式在哪算、数据怎么流、CPU 版长什么样。</p>
+
+    </main>
+
+    <nav class="toc">
+      <b>本页目录</b>
+      <ol>
+        <li><a href="#before">开始之前</a></li>
+        <li><a href="#pipeline">渲染管线</a></li>
+        <li><a href="#lessons">课程目录</a></li>
+        <li><a href="#review">复习章节</a></li>
+        <li><a href="#naming">命名约定</a></li>
+        <li><a href="#code-map">代码地图</a></li>
+        <li><a href="#compare">对照：不用 racket-shader 会怎样</a></li>
+        <li><a href="#refs">参考与取舍</a></li>
+        <li><a href="#troubleshooting">排错速查</a></li>
+        <li><a href="#next">接下来学什么</a></li>
+      </ol>
+    </nav>
+  </div>
+
+  <footer class="site-footer">
+    <p>本教程参照 learnopengl.com 的章节节奏，代码用 racket-shader 写。纯静态站，源码可在浏览器里直接查看。</p>
+  </footer>
+
+</div>
+</body>
+</html>

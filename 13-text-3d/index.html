@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>13 · 3D 文字 — study-opengl</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/highlight.js" defer></script>
+</head>
+<body>
+<div class="page">
+
+  <header class="site-header">
+    <a class="site-title" href="../index.html">study-opengl</a>
+    <nav class="crumbs"><a href="../index.html">课程</a> / <span>13 · 3D 文字</span></nav>
+  </header>
+
+  <div class="layout">
+    <main class="content">
+
+      <h1>3D 文字</h1>
+
+      <p class="goal">本节目标：把文字放进 3D 世界，而不是画在屏幕角落。场景里有三个线框立方体，每个立方体上方浮着一个文字标签；相机绕场景转，文字始终面向相机。跑起来应该看到 <code>Racket</code> / <code>3D Text</code> / <code>OpenGL</code> 三块标签跟着相机一起转。</p>
+
+      <div class="run"><span class="prompt">$</span> racket 13-text-3d/text-3d.rkt</div>
+
+      <p>raylib 的文字本质是 <b>font atlas + 每个字一个纹理四边形</b>。racket-shader 没有内置文字 API，但同样的思路在 Racket 里完全能做。本课先做最简单、也最适合教程的版本：<b>整段字符串 → 一张纹理 → 一个 3D 四边形</b>。</p>
+
+            <div class="note key">
+        <p><b>计算位置</b>字形位图由 CPU（racket/draw）生成并上传成纹理；3D quad、纹理采样、透明混合在 GPU。CPU 也可以直接画 2D 文字，但放进 3D 世界需要 GPU 的纹理四边形。</p>
+      </div>
+
+<h2 id="s13-1">13.1 raylib 是怎么加文字的</h2>
+
+      <p>raylib 的 <code>Font</code> 里有：</p>
+
+      <ul>
+        <li><code>texture</code>：一张字形图集（atlas）</li>
+        <li><code>recs</code>：每个字形在 atlas 里的矩形</li>
+        <li><code>glyphs</code>：每个字形的 offset 和 advance</li>
+        <li><code>baseSize</code>：字体基准像素高</li>
+      </ul>
+
+      <p><code>DrawTextEx</code> 逐字符走一遍：查 glyph → 算缩放和 advance → <code>DrawTextCodepoint</code>。而 <code>DrawTextCodepoint</code> 最后干的事非常朴素：从 atlas 取一块 <code>srcRect</code>，在屏幕上算一个 <code>dstRect</code>，然后 <code>DrawTexturePro</code> 画一个带纹理的四边形。</p>
+
+      <p>所以 2D 文字是<b>屏幕空间四边形</b>；<code>DrawTextPro</code> 也只是在它外面套了一层 2D 旋转矩阵。raylib 核心并没有 <code>DrawText3D</code>——官方示例 <code>text_3d_drawing.c</code> 是自己把同样的字形四边形放到 3D 空间里：</p>
+
+      <pre><code class="lang-c">rlSetTexture(font.texture.id);
+rlBegin(RL_QUADS);
+    rlTexCoord2f(tx, ty); rlVertex3f(x,         y, z);
+    rlTexCoord2f(tx, th); rlVertex3f(x,         y, z + height);
+    rlTexCoord2f(tw, th); rlVertex3f(x + width, y, z + height);
+    rlTexCoord2f(tw, ty); rlVertex3f(x + width, y, z);
+rlEnd();</code></pre>
+
+      <p>一句话：<b>3D 文字 = 世界空间四边形 + 同一个 font atlas</b>。它没有把字体变成真正的立体几何；需要挤出立体字时，要另外做轮廓三角化。</p>
+
+      <h2 id="s13-2">13.2 Racket 的最小实现：整串文字 → 纹理 → billboard</h2>
+
+      <p>本课的实现分三步：</p>
+
+      <ol>
+        <li><b>CPU 画字</b>：用 <code>racket/draw</code> 把整段文字画到透明 bitmap。</li>
+        <li><b>上传纹理</b>：取 ARGB 像素，转成 RGBA，<code>gl-tex-image-2d</code> 上传。</li>
+        <li><b>画 3D quad</b>：一个单位四边形，用 billboard 矩阵放到文字位置，始终面向相机。</li>
+      </ol>
+
+      <p><a class="filelink" href="../code.html?f=lib/text-texture.rkt">lib/text-texture.rkt</a> 负责前两步，核心是：</p>
+
+      <pre><code class="lang-racket">;; 1. racket/draw 画到透明 bitmap
+(define bmp (make-bitmap w h))
+(define dc (new bitmap-dc% [bitmap bmp]))
+(send dc set-background (make-color 0 0 0 0))
+(send dc clear)
+(send dc set-font font)
+(send dc set-text-foreground (make-color 255 255 255 1.0))
+(send dc draw-text text padding padding)
+
+;; 2. 取像素：get-argb-pixels 给的是 A,R,G,B
+(define argb (make-bytes (* w h 4)))
+(send bmp get-argb-pixels 0 0 w h argb)
+
+;; 3. 转成 GL 的 R,G,B,A，再上传
+(gl-tex-image-2d gl-texture-2d 0 gl-rgba w h 0
+                 gl-rgba gl-unsigned-byte rgba)</code></pre>
+
+      <p>文字 shader 就是一个普通的纹理 quad：</p>
+
+      <pre><code class="lang-racket">(glsl-shader text-frag
+  (version 330 core)
+  (in vec-2 v-uv)
+  (uniform sampler-2d u-tex)
+  (uniform vec-4 u-color)
+  (out vec-4 frag-color)
+  (define (main) void
+    (vec-4 tex (texture u-tex v-uv))
+    (when (&lt; (.w tex) 0.05)
+      (discard))
+    (set! frag-color
+          (vec-4 (* (x tex) (x u-color))
+                 (* (y tex) (y u-color))
+                 (* (z tex) (z u-color))
+                 (* (.w tex) (.w u-color))))))</code></pre>
+
+      <p>billboard 的做法是：从相机算出 <code>right</code> / <code>up</code> / <code>normal</code> 三个基，再用它们组成 model 矩阵的 X/Y/Z 列：</p>
+
+      <pre><code class="lang-racket">(define forward (vnormalize (vsub target eye)))
+(define right (vnormalize (vcross forward (vec-3 0.0 1.0 0.0))))
+(define up (vcross right forward))
+(define normal (vcross right up))      ; 指向相机
+
+;; 单位 quad 的局部 X/Y 缩放到文字宽高比和世界高度
+(mat-4 (vec-4 (* (vx right) sx) (* (vy right) sx) (* (vz right) sx) 0.0)
+       (vec-4 (* (vx up) scale) (* (vy up) scale) (* (vz up) scale) 0.0)
+       (vec-4 (vx normal) (vy normal) (vz normal) 0.0)
+       (vec-4 (vx center) (vy center) (vz center) 1.0))</code></pre>
+
+      <h2 id="s13-3">13.3 三个关键细节</h2>
+
+      <table class="spec">
+        <thead><tr><th>问题</th><th>处理</th></tr></thead>
+        <tbody>
+          <tr><td>Racket bitmap 的像素顺序</td><td><code>get-argb-pixels</code> 给的是 A,R,G,B；GL 的 <code>gl-rgba</code> 要 R,G,B,A，所以要手动换序</td></tr>
+          <tr><td>UV 方向</td><td>bitmap 原点在左上，GL 纹理坐标习惯左下；本课让 quad 左上角取 <code>(0,0)</code>、右下角取 <code>(1,1)</code>，所以文字不会倒</td></tr>
+          <tr><td>像素行对齐</td><td><code>gl-pixel-store-i gl-unpack-alignment 1</code>：Racket bitmap 的每行不保证 4 字节对齐，而 GL 默认按 4 字节读；文字宽度不是 4 的倍数时，不设成 1 就会整张图错行</td></tr>
+          <tr><td>透明</td><td>片元里 <code>discard</code> 掉 alpha &lt; 0.05 的像素；开启 <code>gl-blend</code> + <code>gl-src-alpha</code> / <code>gl-one-minus-src-alpha</code>；文字画在不透明物体之后，并临时关掉深度写入</td></tr>
+        </tbody>
+      </table>
+
+      <p>透明物体有一条通用规则：<strong>先画不透明物体，再画透明物体</strong>；透明物体按离相机从远到近排序，保持深度测试开着、但关掉深度写入。顺序反了，混合结果就会错——近处的透明面先画、远处的后画，颜色会叠成另一回事。本课的文字是单个 quad、彼此不重叠，所以只做「不透明物体之后画 + 关深度写入」就够了；如果有多个互相遮挡的透明面，就得自己排序。</p>
+
+      <h2 id="s13-code">完整代码</h2>
+
+      <p><a class="filelink" href="../code.html?f=13-text-3d/text-3d.rkt">13-text-3d/text-3d.rkt</a>，本课全部代码（直接 <code>racket</code> 跑）：</p>
+
+      <div class="code">
+        <div class="code-title">13-text-3d/text-3d.rkt<a class="srclink" href="../code.html?f=13-text-3d/text-3d.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">#lang glsl-opengl
+;; ============================================================
+;; 13 · 3D 文字
+;; 运行：racket 13-text-3d/text-3d.rkt
+;; 上一课：12-multiple-lights/multiple-lights.rkt
+;; ============================================================
+;; 目标：把文字放进 3D 世界，而不是画在屏幕角落。
+;;
+;; raylib 的文字本质是「font atlas + 每个字一个纹理四边形」。
+;; 这里先做最小版本：整段字符串 → 一张纹理 → 一个 3D 四边形。
+;;   1. lib/text-texture.rkt 用 racket/draw 把文字画成透明 bitmap
+;;   2. 上传成 GL 纹理
+;;   3. 在 3D 里画一个 unit quad，用 billboard 让它始终面向相机
+;;
+;; 场景：三个线框立方体 + 每个立方体上方的文字标签。
+;; 相机绕场景转，文字始终面向相机（billboard）。
+;;
+;; 想扩展成 raylib 那种逐字绘制：把“整串纹理”换成“字形 atlas”，
+;; 每个字符生成一个 quad 即可；其余 shader / 混合 / 深度处理完全一样。
+
+(require racket/class
+         racket/gui                     ; timer%
+         racket/math                    ; degrees-&gt;radians
+         "../lib/window.rkt"
+         "../lib/matrix.rkt"
+         "../lib/text-texture.rkt")
+
+;; ------------------------------------------------------------
+;; 一、着色器
+;; ------------------------------------------------------------
+
+;; 线框立方体：只需要位置；颜色用 uniform
+(glsl-shader line-vert
+  (version 330 core)
+  (layout (location 0) in vec-3 a-pos)
+  (uniform mat-4 u-model)
+  (uniform mat-4 u-view)
+  (uniform mat-4 u-proj)
+  (define (main) void
+    (set! gl-position (* u-proj (* u-view (* u-model (vec-4 a-pos 1.0)))))))
+
+(glsl-shader line-frag
+  (version 330 core)
+  (uniform vec-4 u-color)
+  (out vec-4 frag-color)
+  (define (main) void
+    (set! frag-color u-color)))
+
+;; 文字：和普通纹理四边形一样，只是片元里丢弃透明像素
+(glsl-shader text-vert
+  (version 330 core)
+  (layout (location 0) in vec-3 pos)
+  (layout (location 1) in vec-2 uv)
+  (uniform mat-4 u-model)
+  (uniform mat-4 u-view)
+  (uniform mat-4 u-proj)
+  (out vec-2 v-uv)
+  (define (main) void
+    (set! v-uv uv)
+    (set! gl-position (* u-proj (* u-view (* u-model (vec-4 pos 1.0)))))))
+
+(glsl-shader text-frag
+  (version 330 core)
+  (in vec-2 v-uv)
+  (uniform sampler-2d u-tex)
+  (uniform vec-4 u-color)
+  (out vec-4 frag-color)
+  (define (main) void
+    (vec-4 tex (texture u-tex v-uv))
+    ;; 透明像素直接丢弃，避免透明边缘写深度 / 出现黑边
+    (when (&lt; (.w tex) 0.05)
+      (discard))
+    (set! frag-color
+          (vec-4 (* (x tex) (x u-color))
+                 (* (y tex) (y u-color))
+                 (* (z tex) (z u-color))
+                 (* (.w tex) (.w u-color))))))
+
+;; ------------------------------------------------------------
+;; 二、几何
+;; ------------------------------------------------------------
+
+;; 线框立方体：8 个角 + 12 条边。每条边拆成两个端点，直接 draw-arrays。
+(define cube-corners
+  (list (vec-3 -0.5 -0.5 -0.5)
+        (vec-3  0.5 -0.5 -0.5)
+        (vec-3  0.5  0.5 -0.5)
+        (vec-3 -0.5  0.5 -0.5)
+        (vec-3 -0.5 -0.5  0.5)
+        (vec-3  0.5 -0.5  0.5)
+        (vec-3  0.5  0.5  0.5)
+        (vec-3 -0.5  0.5  0.5)))
+
+(define cube-edges
+  '((0 1) (1 2) (2 3) (3 0)       ; 后面
+    (4 5) (5 6) (6 7) (7 4)       ; 前面
+    (0 4) (1 5) (2 6) (3 7)))     ; 连接前后
+
+(define line-data
+  (apply concat-vecs
+         (append*
+          (for/list ([e (in-list cube-edges)])
+            (list (list-ref cube-corners (car e))
+                  (list-ref cube-corners (cadr e)))))))
+
+(define line-vertex-count (* 2 (length cube-edges)))
+
+;; 文字四边形：局部 XY 平面，单位大小；UV 的 v=0 对应 bitmap 顶部
+(glsl-struct text-quad (vec-3 pos) (vec-2 uv))
+
+(define text-quad-verts
+  (list (text-quad (vec-3 -0.5  0.5 0.0) (vec-2 0.0 0.0))   ; 左上
+        (text-quad (vec-3  0.5  0.5 0.0) (vec-2 1.0 0.0))   ; 右上
+        (text-quad (vec-3  0.5 -0.5 0.0) (vec-2 1.0 1.0))   ; 右下
+        (text-quad (vec-3 -0.5 -0.5 0.0) (vec-2 0.0 1.0)))) ; 左下
+
+(define text-quad-data
+  (apply concat-vecs (map text-quad-&gt;f32vector text-quad-verts)))
+(define text-quad-indices (u16-array 0 1 2  0 2 3))
+
+;; ------------------------------------------------------------
+;; 三、场景数据
+;; ------------------------------------------------------------
+
+(struct label (tex center scale color) #:transparent)
+
+(define line-program #f)
+(define text-program #f)
+(define line-vao #f)
+(define text-vao #f)
+(define labels '())
+
+;; 三个线框立方体：位置 + 颜色
+(define cubes
+  (list (list (vec-3 -1.8 0.0 0.0) (vec-4 0.25 0.75 1.0 1.0))
+        (list (vec-3  0.0 0.0 0.0) (vec-4 1.0 0.65 0.25 1.0))
+        (list (vec-3  1.8 0.0 0.0) (vec-4 0.35 1.0 0.55 1.0))))
+
+;; uniform setter：从 shader 的编译期接口表生成，类型自动推
+(glsl-uniform-setter! line-program line-vert line-frag #:prefix "line-")
+(glsl-uniform-setter! text-program text-vert text-frag #:prefix "text-")
+
+;; ------------------------------------------------------------
+;; 四、初始化
+;; ------------------------------------------------------------
+(define (init)
+  (set! line-program (build-program (gl-vertex-shader line-vert)
+                                    (gl-fragment-shader line-frag)))
+  (set! text-program (build-program (gl-vertex-shader text-vert)
+                                    (gl-fragment-shader text-frag)))
+
+  (gl-enable gl-depth-test)
+
+  ;; ---- 线框立方体 VAO/VBO ----
+  (set! line-vao (vertex-array-new))
+  (gl-bind-vertex-array line-vao)
+  (define line-vbo (buffer-new))
+  (gl-bind-buffer gl-array-buffer line-vbo)
+  (buffer-upload gl-array-buffer line-data gl-static-draw)
+  (gl-vertex-attrib-pointer 0 3 gl-float #f 0 0)
+  (gl-enable-vertex-attrib-array 0)
+  (gl-bind-vertex-array 0)
+
+  ;; ---- 文字 quad VAO/VBO/EBO ----
+  (set! text-vao (vertex-array-new))
+  (gl-bind-vertex-array text-vao)
+  (define text-vbo (buffer-new))
+  (gl-bind-buffer gl-array-buffer text-vbo)
+  (buffer-upload gl-array-buffer text-quad-data gl-static-draw)
+  (glsl-vertex-layout! text-vert text-quad)
+  (define text-ebo (buffer-new))
+  (gl-bind-buffer gl-element-array-buffer text-ebo)
+  (buffer-upload gl-element-array-buffer text-quad-indices gl-static-draw)
+  (gl-bind-vertex-array 0)
+
+  ;; ---- 文字纹理：在 GL 上下文里创建 ----
+  ;; 每个标签一张纹理；真实项目里如果文字很多，应改成共享字形 atlas。
+  (set! labels
+        (list (label (make-text-texture "Racket" #:font-size 64)
+                     (vec-3 -1.8 1.0 0.0) 0.45
+                     (vec-4 0.65 0.85 1.0 1.0))
+              (label (make-text-texture "3D Text" #:font-size 64)
+                     (vec-3 0.0 1.0 0.0) 0.45
+                     (vec-4 1.0 0.85 0.55 1.0))
+              (label (make-text-texture "OpenGL" #:font-size 64)
+                     (vec-3 1.8 1.0 0.0) 0.45
+                     (vec-4 0.65 1.0 0.75 1.0)))))
+
+;; ------------------------------------------------------------
+;; 五、窗口 / 相机
+;; ------------------------------------------------------------
+(define win-w 800)
+(define win-h 600)
+(define aspect (/ win-w win-h))
+
+(define (draw)
+  (gl-clear-color 0.08 0.10 0.16 1.0)
+  (gl-clear (bitwise-ior gl-color-buffer-bit gl-depth-buffer-bit))
+
+  ;; 相机绕场景转：文字用 billboard，所以始终面向相机
+  (define t (/ (current-inexact-monotonic-milliseconds) 1000.0))
+  (define eye (vec-3 (* 5.0 (cos (* t 0.35)))
+                     2.6
+                     (* 5.0 (sin (* t 0.35)))))
+  (define target (vec-3 0.0 0.5 0.0))
+  (define view (m-look-at eye target (vec-3 0.0 1.0 0.0)))
+  (define proj (m-perspective (degrees-&gt;radians 45.0) aspect 0.1 100.0))
+
+  ;; billboard 基：right / up 都在屏幕平面里，normal 朝向相机
+  (define forward (vnormalize (vsub target eye)))
+  (define right (vnormalize (vcross forward (vec-3 0.0 1.0 0.0))))
+  (define up (vcross right forward))
+  (define normal (vcross right up))      ; = -forward，指向相机
+
+  ;; ---- 线框立方体 ----
+  (program-use line-program)
+  (gl-bind-vertex-array line-vao)
+  (for ([cube (in-list cubes)])
+    (define pos (car cube))
+    (define color (cadr cube))
+    (set-line-u-model! (m-translate pos))
+    (set-line-u-view! view)
+    (set-line-u-proj! proj)
+    (set-line-u-color! color)
+    (gl-draw-arrays gl-lines 0 line-vertex-count))
+
+  ;; ---- 文字：透明，放在不透明/线框之后画 ----
+  (gl-enable gl-blend)
+  (gl-blend-func gl-src-alpha gl-one-minus-src-alpha)
+  (gl-depth-mask #f)                     ; 文字不写深度，避免透明边缘互相遮挡
+
+  (program-use text-program)
+  (gl-bind-vertex-array text-vao)
+  (gl-active-texture gl-texture0)
+  (set-text-u-view! view)
+  (set-text-u-proj! proj)
+  (set-text-u-tex! 0)
+
+  (for ([l (in-list labels)])
+    (define tex (label-tex l))
+    (define scale (label-scale l))
+    (define sx (* scale (text-texture-aspect tex)))
+    ;; 单位 quad 的局部 X 缩放到文字宽高比，Y 缩放到 scale
+    (define model
+      (mat-4 (vec-4 (* (vx right) sx) (* (vy right) sx) (* (vz right) sx) 0.0)
+             (vec-4 (* (vx up) scale) (* (vy up) scale) (* (vz up) scale) 0.0)
+             (vec-4 (vx normal) (vy normal) (vz normal) 0.0)
+             (vec-4 (vx (label-center l)) (vy (label-center l)) (vz (label-center l)) 1.0)))
+    (set-text-u-model! model)
+    (set-text-u-color! (label-color l))
+    (gl-bind-texture gl-texture-2d (text-texture-id tex))
+    (gl-draw-elements gl-triangles 6 gl-unsigned-short 0))
+
+  (gl-depth-mask #t)
+  (gl-disable gl-blend)
+  (gl-bind-vertex-array 0))
+
+(define-values (frame canvas)
+  (make-window #:title "13 3D 文字"
+               #:width win-w
+               #:height win-h
+               #:init init
+               #:draw draw
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+(send frame show #t)
+
+;; 相机在动，需要定时器不断请求重绘
+(define timer
+  (new timer% [interval 16]
+              [notify-callback (lambda () (send canvas refresh))]))
+</code></pre>
+      </div>
+
+      <h2 id="s13-exercise">13.4 试试看</h2>
+
+      <ol class="exercise">
+        <li><b>换文字和颜色</b>：把 <code>labels</code> 里的 <code>"Racket"</code> 改成 <code>"Hello"</code>，颜色改成 <code>(vec-4 1.0 0.3 0.3 1.0)</code>。重跑后标签内容、宽度（<code>text-texture-aspect</code>）和颜色都应该跟着变。</li>
+        <li><b>关掉混合</b>：注释掉 <code>draw</code> 里的 <code>(gl-enable gl-blend)</code> 和 <code>(gl-blend-func ...)</code>。字形边缘不再按 alpha 和背景融合，抗锯齿消失、边缘变硬；全透明像素仍会被片元里的 <code>discard</code> 掉，所以不会出现整块黑底。</li>
+        <li><b>让文字写深度</b>：把 <code>(gl-depth-mask #f)</code> 改成 <code>#t</code>。文字开始写深度，多个标签前后重叠时，后画的透明边缘可能挡住前面的字。本课三个标签不重叠，差别不大；这是透明物体必须想清楚的一个开关。</li>
+        <li><b>取消 billboard</b>：把 <code>right</code> / <code>up</code> / <code>normal</code> 换成固定的世界轴，例如 <code>(vec-3 1 0 0)</code> / <code>(vec-3 0 1 0)</code> / <code>(vec-3 0 0 1)</code>。相机绕圈时文字不再转向相机，转到侧面会看到它变成一条线。</li>
+        <li><b>调字号和距离</b>：把 <code>#:font-size 64</code> 改成 <code>128</code>，或把相机半径 <code>5.0</code> 改成 <code>8.0</code>。前者提高纹理分辨率、世界尺寸不变；后者让文字在画面里变小。想一想哪个是“纹理分辨率”，哪个是“世界尺寸”。</li>
+      </ol>
+
+      <h2 id="s13-next">13.5 拓展方向</h2>
+
+      <ol class="exercise">
+        <li><b>字形 atlas</b>：本课是「整串文字一张纹理」。raylib 的做法是「所有字形共享一张 atlas，每个字符一个 quad」。把 ASCII 字符集画进一张 bitmap，记录每个字形的 UV、advance、offset，就能支持任意动态字符串，并且只绑定一张纹理。</li>
+        <li><b>SDF 字体</b>：把字形转成 signed distance field，shader 里用 <code>smoothstep</code> 取边缘。文字放大到很大也不糊，适合 3D 场景里的远近标签。代价是需要预生成 SDF 图集。</li>
+        <li><b>world-aligned / extruded</b>：本课用 billboard，文字永远面向相机。如果希望文字贴在地面、墙面，或跟着物体旋转，把 model 矩阵换掉即可；如果需要真正的立体字，则要拿字体轮廓做三角化 + 挤出，难度比纹理 quad 高一个量级。</li>
+        <li><b>合批</b>：现在每个标签一次 <code>gl-draw-elements</code>。标签多时，可以把所有字符 quad 合进一个动态 VBO，一次 draw call 画完；文本变化时只更新 VBO 的一段。</li>
+        <li><b>排版</b>：本课只画单行。要做换行、居中、左/右对齐、字距/行距，需要自己实现 <code>MeasureTextEx</code> 等价物：逐字累加 advance，遇到 <code>\n</code> 换行，按最长行算宽。</li>
+        <li><b>样式</b>：描边、阴影、发光都可以用同一张 atlas：多画几遍偏移的 quad，或者在 shader 里采样周围像素。raylib 的 <code>DrawTextStyle</code> 例子就是类似思路。</li>
+        <li><b>2D HUD</b>：如果只是想在屏幕角落显示 FPS/提示，不需要 3D quad；用正交投影画一层 2D 文字即可。它和 3D 文字共享 atlas，只是 vertex shader 的矩阵不同。</li>
+        <li><b>Unicode / 中文</b>：当前只创建了传入字符串需要的字形；要做中文输入，需要按需加载字形或预生成更大的 atlas，并处理字体回退。</li>
+      </ol>
+
+      <div class="note key">
+        <p><b>结论</b>raylib 的文字不是「绘制文字的函数」，而是「font atlas + 四边形」；3D 文字只是把四边形放进世界空间。Racket 里同样可以做到：<code>racket/draw</code> 负责字形位图，OpenGL 负责纹理和 quad，racket-shader 负责 shader。真正要投入工程时，再把「整串纹理」升级成「字形 atlas + 合批」即可。</p>
+      </div>
+
+    </main>
+
+    <nav class="toc">
+      <b>本节目录</b>
+      <ol>
+        <li><a href="#s13-1">13.1 raylib 是怎么加文字的</a></li>
+        <li><a href="#s13-2">13.2 Racket 的最小实现</a></li>
+        <li><a href="#s13-3">13.3 三个关键细节</a></li>
+        <li><a href="#s13-code">完整代码</a></li>
+        <li><a href="#s13-exercise">13.4 试试看</a></li>
+        <li><a href="#s13-next">13.5 拓展方向</a></li>
+      </ol>
+    </nav>
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="../12-multiple-lights/index.html">← 12 多光源</a>
+    <a class="next" href="../14-model-loading/index.html">14 模型加载 →</a>
+  </nav>
+
+  <footer class="site-footer">
+    <p>本教程参照 learnopengl.com 的章节节奏，代码用 racket-shader 写。纯静态站，源码可在浏览器里直接查看。</p>
+  </footer>
+
+</div>
+</body>
+</html>
