@@ -20,6 +20,7 @@
 (require racket/class
          racket/math                     ; degrees->radians
          "../lib/window.rkt"
+         "../lib/gpu.rkt"
          "../lib/matrix.rkt")            ; m-look-at / m-perspective / m-normal-matrix / …
 
 ;; ------------------------------------------------------------
@@ -197,19 +198,19 @@
 (glsl-uniform-setter! lamp-program lamp-vert-src lamp-frag-src #:prefix "lamp-")
 
 (define (init)
-  (set! object-program (build-program (gl-vertex-shader vert-src)
-                                      (gl-fragment-shader frag-src)))
-  (set! lamp-program (build-program (gl-vertex-shader lamp-vert-src)
-                                    (gl-fragment-shader lamp-frag-src)))
+  (set! object-program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                                     (gl-fragment-shader frag-src))))
+  (set! lamp-program (own! 'program (build-program (gl-vertex-shader lamp-vert-src)
+                                                   (gl-fragment-shader lamp-frag-src))))
 
   ;; 画立体的东西就得开深度测试（06 课）。
   (gl-enable gl-depth-test)
 
   ;; ---- VAO / VBO / EBO ----
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
 
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer cube-data gl-static-draw)
   ;; 属性布局：shader 的 in 名和 shader-struct 字段名同名（pos / normal），
@@ -222,7 +223,7 @@
   ;;   (gl-enable-vertex-attrib-array 1)
   (glsl-vertex-layout! vert-src vertex)
 
-  (define ebo (buffer-new))
+  (define ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -272,7 +273,8 @@
                #:init init
                #:draw draw
                ;; 窗口尺寸变化、viewport 重设之后被调用，参数是新的客户区宽高。
-               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
+               #:on-close release-all!))
 (send frame show #t)
 
 ;; 本课没有 timer：立方体是静姿态，没有东西在动，就不必每 16ms 请求一次重绘（同 08 课）。

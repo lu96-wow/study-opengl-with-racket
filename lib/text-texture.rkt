@@ -16,7 +16,8 @@
 ;; 注意：每个字符串一张纹理，适合标题/标签；大量动态文字应改成字形 atlas。
 
 (require racket/class
-         racket/draw)
+         racket/draw
+         "gpu.rkt")   ; own!：纹理句柄要登记，否则关闭时不会释放
 
 (provide text-texture text-texture?
          text-texture-id text-texture-width text-texture-height text-texture-aspect
@@ -72,7 +73,9 @@
   (define rgba (argb->rgba argb w h))
 
   ;; 上传成 GL 纹理。文字不做 mipmap，线性过滤 + clamp 就够了。
-  (define id (texture-new))
+  ;; own! 把这句柄登记到 lib/gpu.rkt 的登记表：调用方拿到的 text-texture
+  ;; 里只有 id 和尺寸，没法可靠地记得在哪释放，所以由构造方登记。
+  (define id (own! 'texture (texture-new)))
   (gl-bind-texture gl-texture-2d id)
   (gl-pixel-store-i gl-unpack-alignment 1)
   (gl-tex-parameter-i gl-texture-2d gl-texture-min-filter gl-linear)

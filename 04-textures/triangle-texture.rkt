@@ -15,7 +15,8 @@
 ;; 因为三角形只有三个角，无法同时覆盖矩形的四个角。
 
 (require racket/class
-         "../lib/window.rkt")
+         "../lib/window.rkt"
+         "../lib/gpu.rkt")
 
 ;; ------------------------------------------------------------
 ;; 一、棋盘纹理（和 04 课相同）
@@ -76,11 +77,11 @@
 (define texture #f)
 
 (define (init)
-  (set! program (build-program (gl-vertex-shader tri-vert)
-                               (gl-fragment-shader tri-frag)))
+  (set! program (own! 'program (build-program (gl-vertex-shader tri-vert)
+                                              (gl-fragment-shader tri-frag))))
 
   ;; ---- 纹理 ----
-  (set! texture (texture-new))
+  (set! texture (own! 'texture (texture-new)))
   (gl-bind-texture gl-texture-2d texture)
   (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-s gl-repeat)
   (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-t gl-repeat)
@@ -97,10 +98,10 @@
   (uniform-set! (uniform-location program "u_tex") 'sampler-2d 0)
 
   ;; ---- VAO / VBO / EBO ----
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
 
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer vertex-data gl-static-draw)
 
@@ -112,7 +113,7 @@
   (gl-vertex-attrib-pointer 1 2 gl-float #f stride uv-offset)
   (gl-enable-vertex-attrib-array 1)
 
-  (define ebo (buffer-new))
+  (define ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -131,5 +132,6 @@
 (define-values (frame canvas)
   (make-window #:title "04 纹理贴到三角形"
                #:init init
-               #:draw draw))
+               #:draw draw
+               #:on-close release-all!))
 (send frame show #t)

@@ -85,7 +85,7 @@
       </figure>
 
       <div class="note key">
-        <p><b>关键点</b>方括号里那两段是你写的程序，叫 shader，用 GLSL 写；其余阶段是 GPU 固定行为，只能设参数不能改代码。</p>
+        <p><b>关键点</b>方括号里那两段是你写的程序，叫 shader，用 GLSL 写。可编程阶段不止这两段（几何、曲面细分、compute 也都是），本教程主线只用顶点+片元；除此之外的 IA、图元装配/裁剪、光栅化、逐片元操作才是 GPU 固定功能，只能设参数。</p>
       </div>
 
       <h2 id="lessons">课程目录</h2>
@@ -109,7 +109,7 @@
         <article class="card">
           <div class="card-num">02</div>
           <h3 class="card-title"><a href="02-hello-triangle/index.html">第一个三角形</a></h3>
-          <p class="card-desc">先走 raw OpenGL 的编译/缓冲/VAO 流程，再用便利层；VBO / VAO / EBO。</p>
+          <p class="card-desc">先走 raw OpenGL 的编译/缓冲/VAO 流程，再用便利层；VBO / VAO / EBO，以及 GPU 句柄的归属与释放。</p>
           <div class="card-run">racket 02-hello-triangle/triangle.rkt</div>
         </article>
 

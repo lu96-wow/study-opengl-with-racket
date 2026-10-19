@@ -15,6 +15,7 @@
          racket/gui
          racket/math
          "../lib/window.rkt"
+         "../lib/gpu.rkt"
          "../lib/matrix.rkt")
 
 ;; ------------------------------------------------------------
@@ -146,8 +147,8 @@
 (define u-proj-loc #f)
 
 (define (init)
-  (set! program (build-program (gl-vertex-shader vert-src)
-                               (gl-fragment-shader frag-src)))
+  (set! program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                              (gl-fragment-shader frag-src))))
 
   ;; ---- 深度缓冲 ----
   ;; 每个像素记住目前画到的最浅的深度；新片元比它更远就直接丢弃。
@@ -162,7 +163,7 @@
   (gl-cull-face gl-back)
 
   ;; ---- 纹理：创建对象、设参数、上传像素（同 04 课） ----
-  (set! texture (texture-new))
+  (set! texture (own! 'texture (texture-new)))
   (gl-bind-texture gl-texture-2d texture)
   (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-s gl-repeat)
   (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-t gl-repeat)
@@ -180,10 +181,10 @@
   (gl-bind-texture gl-texture-2d texture)
 
   ;; ---- VAO / VBO / EBO ----
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
 
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer vertex-data gl-static-draw)
   ;; 步长和偏移都从布局算出来，不写字面量：vec-3 + vec-2 = 5 个 float = 20 字节，
@@ -195,7 +196,7 @@
   (gl-vertex-attrib-pointer 1 2 gl-float #f stride uv-offset)
   (gl-enable-vertex-attrib-array 1)
 
-  (define ebo (buffer-new))
+  (define ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -241,7 +242,8 @@
                #:init init
                #:draw draw
                ;; 窗口尺寸变化、viewport 重设之后被调用，参数是新的客户区宽高。
-               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
+               #:on-close release-all!))
 (send frame show #t)
 
 ;; 立方体在转，需要定时器不断请求重绘。

@@ -30,6 +30,7 @@
          racket/gui                      ; timer%
          racket/math                     ; degrees->radians / pi / cos / sin
          "../lib/window.rkt"
+         "../lib/gpu.rkt"
          "../lib/matrix.rkt")            ; m-look-at / m-perspective / m-normal-matrix / …
 
 ;; ------------------------------------------------------------
@@ -249,22 +250,22 @@
 (glsl-uniform-setter! program vert-src frag-src)
 
 (define (init)
-  (set! program (build-program (gl-vertex-shader vert-src)
-                               (gl-fragment-shader frag-src)))
+  (set! program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                              (gl-fragment-shader frag-src))))
 
   ;; 画立体的东西就得开深度测试（06 课）。
   (gl-enable gl-depth-test)
 
   ;; ---- VAO / VBO / EBO ----
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
 
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer cube-data gl-static-draw)
   (glsl-vertex-layout! vert-src vertex)
 
-  (define ebo (buffer-new))
+  (define ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -333,7 +334,8 @@
                #:init init
                #:draw draw
                ;; 窗口尺寸变化、viewport 重设之后被调用，参数是新的客户区宽高。
-               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
+               #:on-close release-all!))
 (send frame show #t)
 
 ;; 灯在公转，颜色池一直在流动，所以要定时器不断请求重绘（同 06 / 11 聚光那节）。

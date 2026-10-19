@@ -113,8 +113,30 @@
       <p>CPU 把顶点数据准备好交给 GPU，GPU 按顺序跑过这些阶段，最后落在屏幕的像素上。中间三个固定阶段各干一件事：图元装配把顶点拼成三角形，光栅化把三角形变成一堆像素，再由片元着色器决定每个像素什么颜色。第 2 课起，我们讲的就是怎么把数据喂进这条管线、以及怎么写那两个方括号里的程序。</p>
 
       <div class="note key">
-        <p><b>关键点</b>方括号里那两段（图 0-1 标蓝的）是你写的程序，叫 shader，用 GLSL 写；其余阶段是 GPU 的固定行为，只能设参数、不能改代码。</p>
+        <p><b>关键点</b>方括号里那两段（图 0-1 标蓝的）是你写的程序，叫 shader，用 GLSL 写。但可编程阶段不止这两段：几何着色器、曲面细分控制/求值、compute 也都是你写的程序。本教程的主线只用顶点+片元两段，其余阶段（IA、图元装配/裁剪、光栅化、逐片元操作）才是 GPU 的固定行为，只能设参数、不能改代码。</p>
       </div>
+
+      <p>图 0-1 为了好记只画了两段可编程。完整顺序和各自的可编程与否是这样：</p>
+
+      <pre><code>顶点数据 → [顶点着色器] → [曲面细分控制] → [曲面细分求值] → [几何着色器]
+        → 图元装配 / 裁剪 / 剔除 → 光栅化 → [片元着色器] → 逐片元操作（ROP） → 屏幕
+旁路：[compute shader]（不在图形管线上，自己读写缓冲/纹理）</code></pre>
+
+      <table class="spec">
+        <thead><tr><th>阶段</th><th>可编程</th><th>版本门槛</th><th>本教程</th></tr></thead>
+        <tbody>
+          <tr><td>顶点着色器</td><td>是</td><td>2.0+</td><td>主线，第 2 课起</td></tr>
+          <tr><td>曲面细分控制 / 求值</td><td>是</td><td>4.0+</td><td><code>330 core</code> 下不可用</td></tr>
+          <tr><td>几何着色器</td><td>是</td><td>3.2+</td><td>可用，本教程未展开</td></tr>
+          <tr><td>图元装配 / 裁剪 / 剔除</td><td>否</td><td>—</td><td>固定功能，只能设状态</td></tr>
+          <tr><td>光栅化</td><td>否</td><td>—</td><td>固定功能</td></tr>
+          <tr><td>片元着色器</td><td>是</td><td>2.0+</td><td>主线</td></tr>
+          <tr><td>逐片元操作（ROP）</td><td>否</td><td>—</td><td>固定功能，深度/混合等靠 <code>gl-enable</code> 设状态</td></tr>
+          <tr><td>compute shader</td><td>是</td><td>4.3+</td><td><code>330 core</code> 下不可用</td></tr>
+        </tbody>
+      </table>
+
+      <p><b>为什么本教程只写两段</b>顶点+片元两段已经能画出后面所有章节的东西；几何着色器适合做爆炸、法线可视化这类「一个图元变多个」，曲面细分适合高细节曲面，compute 适合与绘制无关的通用并行计算——都不是入门必需，读完主线再按需补即可。</p>
 
       <h2 id="s0-6">0.6 core profile 与 version 330 core</h2>
 
@@ -237,7 +259,7 @@
         </tbody>
       </table>
 
-      <p>你写的 shader 只覆盖“顶点/片元程序”两段；IA、光栅化、ROP 这些是固定的，只能设状态（`gl-enable`、`gl-blend-func`、`gl-viewport` 等）。</p>
+      <p>注意这张表只列<b>固定功能</b>单元，不是说表外都不可编程：顶点、几何、曲面细分控制/求值、片元、compute 都是可编程阶段，完整清单和版本门槛见 <a href="#s0-5">0.5 的补注</a>。本教程只用顶点+片元两段；IA、光栅化、ROP 这些是固定的，只能设状态（<code>gl-enable</code>、<code>gl-blend-func</code>、<code>gl-viewport</code> 等）。</p>
 
       <h3 id="s0-8-4">0.8.4 内存层次与带宽</h3>
 
@@ -276,7 +298,9 @@
         <li><b>varying</b>：顶点 → 片元的插值数据，存在片上，不落显存。</li>
       </ul>
 
-      <p>GL 调用大多是“把命令放进队列”，CPU 不一定等 GPU 做完。只有回读、`gl-finish`、查询结果等操作才会强制同步。</p>
+      <p>GL 调用大多是“把命令放进队列”，CPU 不一定等 GPU 做完。只有回读、<code>gl-finish</code>、查询结果等操作才会强制同步。</p>
+
+      <p><b>谁负责释放</b>这张表里的名字只是句柄：<code>gl-gen-*</code> / <code>build-program</code> 分配的对象归调用方，用完要 <code>gl-delete-*</code>。它们的内存在驱动里，不在 Racket 堆上，GC 看不见也不会回收（为什么不能用终结器，见 <code>racket-shader-opengl</code> 的 DESIGN.md §3.1）。而 <code>vec-array</code> 这类 Racket 值不用你管——上传是复制，复制完那份内存就交给 GC 了。两者分界见 <a href="../02-hello-triangle/index.html#s2-9">02 · 2.9</a>。</p>
 
       <h3 id="s0-8-6">0.8.6 每个常用 GL 调用在 GPU 上做什么</h3>
 
@@ -366,7 +390,8 @@ GPU 前端: 取命令
 ;;
 ;; 命名约定：
 ;;   gl-array-buffer 这类是 OpenGL 内置常量的 Racket 改名（C 里写 GL_ARRAY_BUFFER）；
-;;   vec-3 / build-program / shader-byte-size 这些来自 racket-shader；
+;;   vec-3 / shader-byte-size 这些来自 racket-shader；
+;;   build-program / buffer-new 这些便利层来自 racket-shader-opengl；
 ;;   vertices / vbo / program / init / draw 才是本教程自己起的名字。
 
 ;; 课程表：节号 / 标题 / 源码文件 / 一句话说明。
@@ -381,7 +406,7 @@ GPU 前端: 取命令
         (list "02" "第一个三角形"
               (list "02-hello-triangle/triangle.rkt"
                     "02-hello-triangle/rectangle.rkt")
-              "VBO 存数据、VAO 记怎么读、EBO 省下重复顶点")
+              "VBO 存数据、VAO 记怎么读、EBO 省重复顶点；GPU 句柄要显式释放")
         (list "03" "着色器"
               (list "03-shaders/shaders.rkt")
               "GLSL 类型、阶段间传值、uniform、多属性交错布局")

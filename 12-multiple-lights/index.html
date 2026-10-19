@@ -238,6 +238,7 @@
          racket/gui                      ; timer%
          racket/math                     ; degrees-&gt;radians / pi / cos / sin
          "../lib/window.rkt"
+         "../lib/gpu.rkt"
          "../lib/matrix.rkt")            ; m-look-at / m-perspective / m-normal-matrix / …
 
 ;; ------------------------------------------------------------
@@ -332,10 +333,10 @@
 ;; 三、立方体几何：24 个顶点，每个带位置 + 法线（同 09 / 11 课）
 ;; ------------------------------------------------------------
 ;; 同一个立方体、同样的 24 顶点 / 36 索引：每个面摊自己的一份顶点，因为每个面的
-;; 法线不同（前面 (0,0,1)、右面 (1,0,0)…）。布局仍用 glsl-struct 镜像到 CPU 侧，
+;; 法线不同（前面 (0,0,1)、右面 (1,0,0)…）。布局仍用 shader-struct 镜像到 CPU 侧，
 ;; 步长与字段偏移全部由字段表给出，并在编译期按名字对齐（glsl-vertex-layout!），一个字节字面量都没有。
 ;; （本课不需要 UV，所以属性只有位置和法线。）
-(glsl-struct vertex (vec-3 pos) (vec-3 normal))
+(shader-struct vertex (vec-3 pos) (vec-3 normal))
 
 (define cube-verts
   (list
@@ -457,22 +458,22 @@
 (glsl-uniform-setter! program vert-src frag-src)
 
 (define (init)
-  (set! program (build-program (gl-vertex-shader vert-src)
-                               (gl-fragment-shader frag-src)))
+  (set! program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                              (gl-fragment-shader frag-src))))
 
   ;; 画立体的东西就得开深度测试（06 课）。
   (gl-enable gl-depth-test)
 
   ;; ---- VAO / VBO / EBO ----
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
 
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer cube-data gl-static-draw)
   (glsl-vertex-layout! vert-src vertex)
 
-  (define ebo (buffer-new))
+  (define ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -541,7 +542,8 @@
                #:init init
                #:draw draw
                ;; 窗口尺寸变化、viewport 重设之后被调用，参数是新的客户区宽高。
-               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
+               #:on-close release-all!))
 (send frame show #t)
 
 ;; 灯在公转，颜色池一直在流动，所以要定时器不断请求重绘（同 06 / 11 聚光那节）。
@@ -575,6 +577,10 @@
         <li>四盏灯的相位改成一样（<code>light-pos</code> 里去掉 <code>(* i (/ pi 2.0))</code>）：四盏灯挤在同一段圆弧上，四个颜色池叠成一个发白的亮区，朝着它们的那些面一起亮起来。</li>
         <li>把四盏灯<b>提到高处</b>：<code>light-height</code> 从 <code>1.2</code> 改成 <code>4.0</code>。灯离立方体远了，衰减让每个池子都明显变暗，只剩顶面还亮——正好复习 11 课的 <code>1/(kc + kl·d + kq·d²)</code>。</li>
       </ol>
+      <div class="note">
+        <p><b>GPU 资源</b>本节代码里每个 <code>*-new</code> / <code>build-program</code> 都用 <code>own!</code> 登记，关窗时 <code>release-all!</code> 统一删除。为什么这些句柄 GC 管不了，见 <a href="../02-hello-triangle/index.html#s2-9">02 · 2.9</a>。</p>
+      </div>
+
 
       <h2 id="s12-summary">小结</h2>
 

@@ -13,7 +13,8 @@
 ;; 本文件为了聚焦概念，使用 racket-shader-opengl 的便利层（build-program / buffer-new …）。
 
 (require racket/class
-         "../lib/window.rkt")
+         "../lib/window.rkt"
+         "../lib/gpu.rkt")
 
 ;; 三个顶点。一个顶点至少要有位置；vec-3 = 三个 float = (x y z)。
 ;; 坐标是标准坐标（-1..1，中心 0）。vec-array 把三个顶点打包成一条连续缓冲。
@@ -45,15 +46,15 @@
 
   ;; ① 编译两段着色器并链接成一个 program。
   ;;    racket-shader 的工具：自动查编译/链接状态，失败时给出报错行。
-  (set! program (build-program (gl-vertex-shader vert-src)
-                               (gl-fragment-shader frag-src)))
+  (set! program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                              (gl-fragment-shader frag-src))))
 
   ;; ② 把顶点数据搬进显存。
   ;;    这一步只依赖 gl-array-buffer 这个绑定，和 VAO 无关（VAO 没绑也能上传）。
   ;;    gl-gen-buffers(n)：生成 n 个缓冲，返回装 id 的向量；
   ;;    裸写法： (u32vector-ref (gl-gen-buffers 1) 0)
   ;;    buffer-new：取单个缓冲 id（= glGenBuffers(1) 的便利封装）。
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   ;; gl-bind-buffer(目标, id)：把这块缓冲绑到“顶点数据”目标上。
   ;;   gl-array-buffer 是 OpenGL 内置常量（C 里叫 GL_ARRAY_BUFFER），表示顶点数据用途。
   ;;   其他缓冲目标（UBO/SSBO/像素缓冲…）和用法常量见教程 2.2 的表。
@@ -69,7 +70,7 @@
 
   ;; ③ 建 VAO 并绑定，然后描述“怎么读”。这两步才依赖 VAO。
   ;;    VAO = 顶点数组对象，是“数据说明书”，记下每个属性槽怎么从缓冲里读。
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
   ;; gl-vertex-attrib-pointer(槽号, 分量数, 类型, 归一化, 步长, 偏移)
   ;;   = 0 号槽 / 每顶点 3 个分量 / 类型 float / 不归一化 / 紧密排列(0) / 从 0 开始
@@ -99,7 +100,8 @@
 (define-values (frame canvas)
   (make-window #:title "02 第一个三角形"
                #:init init
-               #:draw draw))
+               #:draw draw
+               #:on-close release-all!))
 (send frame show #t)
 
 ;; 复盘：VBO 存数据，VAO 记"怎么读"，program 是 GPU 上的程序，draw 用它们画图。

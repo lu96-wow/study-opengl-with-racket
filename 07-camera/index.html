@@ -438,8 +438,9 @@
 
 (require racket/class
          racket/gui                     ; timer%
-         racket/math                    ; degrees->radians
+         racket/math                    ; degrees-&gt;radians
          "../lib/window.rkt"
+         "../lib/gpu.rkt"
          "../lib/matrix.rkt")           ; m-look-at / m-translate / m-rotate-x / m-perspective
 
 ;; ------------------------------------------------------------
@@ -466,7 +467,7 @@
 ;; 上一次更新相机状态的时刻（毫秒）。每帧 draw 里用它算 dt。
 (define last-frame-ms (current-inexact-monotonic-milliseconds))
 
-;; 当前正被按住的键：key -> #t。
+;; 当前正被按住的键：key -&gt; #t。
 ;; 按下时写入，松开时删除；draw 每帧只看这个集合，不再依赖系统自动重复。
 (define held (make-hash))
 (define (held? key) (hash-has-key? held key))
@@ -480,7 +481,7 @@
 ;; pitch 两端钳在 ±89°。为什么不给 ±90°：到 ±90° 时 forward 竖直、与 up 平行，
 ;; look-at 里的 f × up 就退化成零向量，归一化它得 NaN，画面整个崩——7.5 让读者亲手
 ;; 撞过一次的退化，真相机就靠这一行把它挡在门外。
-(define pitch-limit (degrees->radians 89.0))
+(define pitch-limit (degrees-&gt;radians 89.0))
 
 ;; ------------------------------------------------------------
 ;; 三、欧拉角：由 yaw / pitch 算出 forward 与 right
@@ -660,11 +661,11 @@
 (define texture #f)
 
 (define (init)
-  (set! program (build-program (gl-vertex-shader vert-src)
-                               (gl-fragment-shader frag-src)))
+  (set! program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                              (gl-fragment-shader frag-src))))
 
   ;; ---- 棋盘纹理（同 04 课）----
-  (set! texture (texture-new))
+  (set! texture (own! 'texture (texture-new)))
   (gl-bind-texture gl-texture-2d texture)
   (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-s gl-repeat)
   (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-t gl-repeat)
@@ -680,10 +681,10 @@
   (gl-bind-texture gl-texture-2d texture)
 
   ;; ---- VAO / VBO / EBO ----
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
 
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer vertex-data gl-static-draw)
   ;; 步长和偏移都从布局算出来，不写字面量。
@@ -694,7 +695,7 @@
   (gl-vertex-attrib-pointer 1 2 gl-float #f stride uv-offset)
   (gl-enable-vertex-attrib-array 1)
 
-  (define ebo (buffer-new))
+  (define ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -717,7 +718,7 @@
   (define view (m-look-at pos (vadd pos (camera-forward)) (vec-3 0.0 1.0 0.0)))
 
   ;; 投影同 06：竖直视场 45°、aspect 跟着窗口（#:on-size 同步）、近远平面 0.1 / 100。
-  (define proj (m-perspective (degrees->radians 45.0) aspect 0.1 100.0))
+  (define proj (m-perspective (degrees-&gt;radians 45.0) aspect 0.1 100.0))
 
   (program-use program)
   (gl-bind-vertex-array vao)
@@ -748,7 +749,8 @@
                #:on-key-up on-key-up
                #:on-focus on-focus
                ;; 窗口尺寸变了 → 重设 viewport 之后回调这里，把 aspect 一起改掉
-               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
+               #:on-close release-all!))
 (send frame show #t)
 ;; canvas 得先拿到键盘焦点才收得到按键——这行不能少，且 focus 不带参数
 ;; （写 (send canvas focus #t) 会报 arity 错）。
@@ -766,7 +768,7 @@
 ;;   · 按住 W + D：斜着走
 ;;   · 鼠标转视角：canvas 还能接 on-event 拿到鼠标移动事件，把两次事件的位移喂给
 ;;     yaw / pitch（pitch 再钳一下）就是第一人称的鼠标视角——思路到此，不展开
-;;   · pitch-limit 改成 (degrees->radians 90.0)：抬头到顶，forward 与 up 平行，
+;;   · pitch-limit 改成 (degrees-&gt;radians 90.0)：抬头到顶，forward 与 up 平行，
 ;;     f × up = 0，画面崩成 NaN（就是 7.5 那个退化）——改回来即好
 ;;   · move-speed 从 2.5 改成 25.0：按住 W 一秒就穿出立方体群
 ;; ============================================================</code></pre>
@@ -796,6 +798,7 @@
          racket/gui                     ; timer%
          racket/math                    ; degrees-&gt;radians
          "../lib/window.rkt"
+         "../lib/gpu.rkt"
          "../lib/matrix.rkt")           ; m-look-at / m-translate / m-rotate-x / m-perspective
 
 ;; ------------------------------------------------------------
@@ -920,11 +923,11 @@
 (define texture #f)
 
 (define (init)
-  (set! program (build-program (gl-vertex-shader vert-src)
-                               (gl-fragment-shader frag-src)))
+  (set! program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                              (gl-fragment-shader frag-src))))
 
   ;; ---- 棋盘纹理（同 04 课）----
-  (set! texture (texture-new))
+  (set! texture (own! 'texture (texture-new)))
   (gl-bind-texture gl-texture-2d texture)
   (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-s gl-repeat)
   (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-t gl-repeat)
@@ -940,10 +943,10 @@
   (gl-bind-texture gl-texture-2d texture)
 
   ;; ---- VAO / VBO / EBO ----
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
 
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer vertex-data gl-static-draw)
   ;; 步长和偏移都从布局算出来，不写字面量。
@@ -954,7 +957,7 @@
   (gl-vertex-attrib-pointer 1 2 gl-float #f stride uv-offset)
   (gl-enable-vertex-attrib-array 1)
 
-  (define ebo (buffer-new))
+  (define ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -1009,7 +1012,8 @@
                #:init init
                #:draw draw
                ;; 窗口尺寸变了 → 重设 viewport 之后回调这里，把 aspect 一起改掉
-               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
+               #:on-close release-all!))
 (send frame show #t)
 
 ;; 定时器只负责"每隔 16ms 请求重绘"，绘制永远发生在 draw 里（同 01 课）。
@@ -1023,8 +1027,7 @@
 ;;     normalize 零向量得 NaN，画面整个崩掉（原因见 7.5）
 ;;   · 半径 3.0 改成 1.0 → 立方体群冲出视野，被近平面 0.1 裁掉
 ;;   · up 改成 (0,0,1) → u 轴换了个方向，画面"躺倒"
-;; ============================================================
-</code></pre>
+;; ============================================================</code></pre>
       </div>
 
       <h2 id="s7-exercise">试试看</h2>
@@ -1037,6 +1040,10 @@
         <li>把半径 <code>3.0</code> 改成 <code>1.0</code>：相机整个陷进立方体群中间，视角只剩眼前那个立方体的大面，其余立方体都跑到视野外（实测截图里只看得见一块被斜看的正面加一个角）。</li>
         <li>把 <code>up</code> 改成 <code>(vec-3 0.0 0.0 1.0)</code>：画面整体"躺倒"。u 换了方向，相机坐标系的 y 轴跟着换，世界看起来就是侧翻的——它没崩，还是能画，只是"上"不再是你以为的那个上。</li>
       </ol>
+      <div class="note">
+        <p><b>GPU 资源</b>本节代码里每个 <code>*-new</code> / <code>build-program</code> 都用 <code>own!</code> 登记，关窗时 <code>release-all!</code> 统一删除。为什么这些句柄 GC 管不了，见 <a href="../02-hello-triangle/index.html#s2-9">02 · 2.9</a>。</p>
+      </div>
+
 
       <h2 id="s7-summary">小结</h2>
 

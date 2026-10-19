@@ -159,6 +159,7 @@ rlEnd();</code></pre>
          racket/gui                     ; timer%
          racket/math                    ; degrees-&gt;radians
          "../lib/window.rkt"
+         "../lib/gpu.rkt"
          "../lib/matrix.rkt"
          "../lib/text-texture.rkt")
 
@@ -243,7 +244,7 @@ rlEnd();</code></pre>
 (define line-vertex-count (* 2 (length cube-edges)))
 
 ;; 文字四边形：局部 XY 平面，单位大小；UV 的 v=0 对应 bitmap 顶部
-(glsl-struct text-quad (vec-3 pos) (vec-2 uv))
+(shader-struct text-quad (vec-3 pos) (vec-2 uv))
 
 (define text-quad-verts
   (list (text-quad (vec-3 -0.5  0.5 0.0) (vec-2 0.0 0.0))   ; 左上
@@ -281,17 +282,17 @@ rlEnd();</code></pre>
 ;; 四、初始化
 ;; ------------------------------------------------------------
 (define (init)
-  (set! line-program (build-program (gl-vertex-shader line-vert)
-                                    (gl-fragment-shader line-frag)))
-  (set! text-program (build-program (gl-vertex-shader text-vert)
-                                    (gl-fragment-shader text-frag)))
+  (set! line-program (own! 'program (build-program (gl-vertex-shader line-vert)
+                                                   (gl-fragment-shader line-frag))))
+  (set! text-program (own! 'program (build-program (gl-vertex-shader text-vert)
+                                                   (gl-fragment-shader text-frag))))
 
   (gl-enable gl-depth-test)
 
   ;; ---- 线框立方体 VAO/VBO ----
-  (set! line-vao (vertex-array-new))
+  (set! line-vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array line-vao)
-  (define line-vbo (buffer-new))
+  (define line-vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer line-vbo)
   (buffer-upload gl-array-buffer line-data gl-static-draw)
   (gl-vertex-attrib-pointer 0 3 gl-float #f 0 0)
@@ -299,13 +300,13 @@ rlEnd();</code></pre>
   (gl-bind-vertex-array 0)
 
   ;; ---- 文字 quad VAO/VBO/EBO ----
-  (set! text-vao (vertex-array-new))
+  (set! text-vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array text-vao)
-  (define text-vbo (buffer-new))
+  (define text-vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer text-vbo)
   (buffer-upload gl-array-buffer text-quad-data gl-static-draw)
   (glsl-vertex-layout! text-vert text-quad)
-  (define text-ebo (buffer-new))
+  (define text-ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer text-ebo)
   (buffer-upload gl-element-array-buffer text-quad-indices gl-static-draw)
   (gl-bind-vertex-array 0)
@@ -398,17 +399,21 @@ rlEnd();</code></pre>
                #:height win-h
                #:init init
                #:draw draw
-               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
+               #:on-close release-all!))
 (send frame show #t)
 
 ;; 相机在动，需要定时器不断请求重绘
 (define timer
   (new timer% [interval 16]
-              [notify-callback (lambda () (send canvas refresh))]))
-</code></pre>
+              [notify-callback (lambda () (send canvas refresh))]))</code></pre>
       </div>
 
-      <h2 id="s13-exercise">13.4 试试看</h2>
+      <div class="note">
+        <p><b>GPU 资源</b>本节代码里每个 <code>*-new</code> / <code>build-program</code> 都用 <code>own!</code> 登记，关窗时 <code>release-all!</code> 统一删除。为什么这些句柄 GC 管不了，见 <a href="../02-hello-triangle/index.html#s2-9">02 · 2.9</a>。</p>
+      </div>
+
+<h2 id="s13-exercise">13.4 试试看</h2>
 
       <ol class="exercise">
         <li><b>换文字和颜色</b>：把 <code>labels</code> 里的 <code>"Racket"</code> 改成 <code>"Hello"</code>，颜色改成 <code>(vec-4 1.0 0.3 0.3 1.0)</code>。重跑后标签内容、宽度（<code>text-texture-aspect</code>）和颜色都应该跟着变。</li>

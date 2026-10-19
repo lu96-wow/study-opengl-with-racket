@@ -13,6 +13,7 @@
 (require racket/class
          racket/gui
          "../lib/window.rkt"
+         "../lib/gpu.rkt"
          "../lib/matrix.rkt")
 
 ;; ------------------------------------------------------------
@@ -82,11 +83,11 @@
 (define u-transform-loc #f)
 
 (define (init)
-  (set! program (build-program (gl-vertex-shader vert-src)
-                               (gl-fragment-shader frag-src)))
+  (set! program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                              (gl-fragment-shader frag-src))))
 
   ;; ---- 3.1 创建并上传纹理 ----
-  (set! texture (texture-new))
+  (set! texture (own! 'texture (texture-new)))
   (gl-bind-texture gl-texture-2d texture)
   (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-s gl-repeat)
   (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-t gl-repeat)
@@ -105,10 +106,10 @@
   (set! u-transform-loc (uniform-location program "u_transform"))
 
   ;; ---- 3.3 VAO / VBO / EBO ----
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
 
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer vertex-data gl-static-draw)
   ;; 步长和偏移都从布局算出来，不写字面量。
@@ -119,7 +120,7 @@
   (gl-vertex-attrib-pointer 1 2 gl-float #f stride uv-offset)
   (gl-enable-vertex-attrib-array 1)
 
-  (define ebo (buffer-new))
+  (define ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -156,7 +157,8 @@
                #:width 800
                #:height 600
                #:init init
-               #:draw draw))
+               #:draw draw
+               #:on-close release-all!))
 (send frame show #t)
 
 ;; 矩阵每帧在变，需要定时器不断请求重绘

@@ -35,6 +35,10 @@
 
       <p>另外，<code>(glsl …)</code> 是语言层，不是 OpenGL 便利层——它只负责把 S 表达式生成 GLSL 文本；<code>vec-array</code> / <code>u16-array</code> 则属于值层便利，负责把 CPU 数据整理成 ffi 向量。这几层要分开看。</p>
 
+      <div class="note">
+        <p><b>先认识 <code>own!</code></b>本课代码里会出现 <code>(own! 'buffer (buffer-new))</code> 这种写法。<code>own!</code> 不是 OpenGL 的东西，是本教程用来记「这个句柄归我、退出时要删」的登记函数：记账后把句柄原样返回。为什么需要它、什么时候释放，见 2.9。</p>
+      </div>
+
       <p>如果一上来就只看到便利层，很容易把「便利层的行为」误当成「OpenGL 的规则」。所以本课先把 raw 流程走一遍。建议先打开 <a class="filelink" href="../code.html?f=compare/raw-triangle.rkt">compare/raw-triangle.rkt</a>：它不用 racket-shader，直接拿 <code>opengl</code> 包画同一个三角形，正好可以对照。</p>
 
       <p>一个三角形在 raw OpenGL 里要经过这些步骤：</p>
@@ -224,7 +228,7 @@
         <pre><code class="lang-racket">  ;; ② 把顶点数据搬进显存。
   ;;    这一步只依赖 gl-array-buffer 这个绑定，和 VAO 无关（VAO 没绑也能上传）。
   ;;    buffer-new：生成一个缓冲 id（= gl-gen-buffers(1) 的便利封装）。
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   ;; gl-bind-buffer(目标, id)：把这块缓冲绑到“顶点数据”目标上。
   ;;   gl-array-buffer 是 OpenGL 内置常量（C 里叫 GL_ARRAY_BUFFER），表示顶点数据用途。
   ;;   其他缓冲目标（UBO/SSBO/像素缓冲…）和用法常量见教程 2.2 的表。
@@ -350,8 +354,8 @@
         <div class="code-title">02-hello-triangle/triangle.rkt<a class="srclink" href="../code.html?f=02-hello-triangle/triangle.rkt">源码 ↗</a></div>
         <pre><code class="lang-racket">  ;; ① 编译两段着色器并链接成一个 program。
   ;;    racket-shader 的工具：自动查编译/链接状态，失败时给出报错行。
-  (set! program (build-program (gl-vertex-shader vert-src)
-                               (gl-fragment-shader frag-src)))
+  (set! program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                                             (gl-fragment-shader frag-src))))
 </code></pre>
       </div>
 
@@ -371,7 +375,7 @@
         <div class="code-title">02-hello-triangle/triangle.rkt<a class="srclink" href="../code.html?f=02-hello-triangle/triangle.rkt">源码 ↗</a></div>
         <pre><code class="lang-racket">  ;; ③ 建 VAO 并绑定，然后描述“怎么读”。这两步才依赖 VAO。
   ;;    VAO = 顶点数组对象，是“数据说明书”，记下每个属性槽怎么从缓冲里读。
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
   ;; gl-vertex-attrib-pointer(槽号, 分量数, 类型, 归一化, 步长, 偏移)
   ;;   = 0 号槽 / 每顶点 3 个分量 / 类型 float / 不归一化 / 紧密排列(0) / 从 0 开始
@@ -561,7 +565,7 @@
         <pre><code class="lang-racket">  ;; 索引缓冲 EBO。
   ;; ★和 ARRAY_BUFFER 不同：ELEMENT_ARRAY_BUFFER 的绑定是 VAO 状态，
   ;;   所以必须在 VAO 还绑着的时候绑它，VAO 才会记住；画的时候才找得到。
-  (define ebo (buffer-new))
+  (define ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 </code></pre>
@@ -609,6 +613,62 @@
         </tbody>
       </table>
 
+      <h2 id="s2-9">2.9 谁拥有这些对象：GPU 资源要显式释放</h2>
+
+      <p>本课创建了三样东西：一个 program、一个 VBO、一个 VAO（矩形课再加一个 EBO）。它们和 <code>vertices</code> 那种 Racket 值不是一类东西：</p>
+
+      <table class="spec">
+        <thead><tr><th>东西</th><th>住在哪</th><th>谁回收</th></tr></thead>
+        <tbody>
+          <tr><td><code>vertices</code> / <code>vec-array</code> / <code>vec-3</code></td><td>Racket 堆</td><td>Racket GC，自动</td></tr>
+          <tr><td><code>program</code> / <code>vbo</code> / <code>vao</code> / <code>ebo</code> / 纹理</td><td>显卡（驱动管的显存与状态）</td><td>只能显式 <code>gl-delete-*</code></td></tr>
+        </tbody>
+      </table>
+
+      <p>分隔这两栏的是 <code>buffer-upload</code>：它把字节<b>复制</b>进显存（<code>glBufferData</code> 的语义就是一次性拷贝），复制完 Racket 那份就可以被 GC 收走——所以 <code>vec-array</code> 这类值永远不需要你手动释放。但从这一刻起数据住在 VBO 里，而 VBO 是一个 <b>GPU 侧对象</b>：你手里只有一个整数 id，Racket 堆里没有任何对象「指向」它，GC 也就看不见它、永远不会替你回收。</p>
+
+      <div class="note key">
+        <p><b>关键点</b><code>buffer-new</code> / <code>vertex-array-new</code> / <code>texture-new</code> / <code>build-program</code> 返回的句柄<b>归调用方</b>，用完要删：<code>buffer-delete</code>、<code>vertex-array-delete</code>、<code>texture-delete</code>、<code>program-delete</code>。不删不会立刻报错，只会一直占着显存，直到上下文销毁（进程退出）才整批还给驱动。</p>
+      </div>
+
+      <p>为什么不能靠 GC 或 Racket 终结器代劳：删除必须发生在<b>拥有这个上下文的线程</b>上，而且要在上下文还活着的时候；终结器跑在 GC 线程、时机不确定，还可能撞上 GPU 正在跑的 draw——轻则状态错误，重则崩溃。所以 <code>racket-shader-opengl</code> 一律返回裸句柄、不挂终结器（见它自己的 DESIGN.md §3.1）。</p>
+
+      <p>本教程的做法是：分配时登记，关窗时一次删干净。</p>
+
+      <div class="code">
+        <div class="code-title">lib/gpu.rkt 的用法（本节起每课都这么写）</div>
+        <pre><code class="lang-racket">(require "../lib/gpu.rkt")
+
+;; 分配时登记：own! 记账后把句柄原样返回
+(set! program (own! 'program (build-program ...)))
+(define vbo (own! 'buffer (buffer-new)))
+(set! vao (own! 'vertex-array (vertex-array-new)))
+
+;; 关窗时，#:on-close 回调在 GL 上下文还活着的时候排空这张表
+(make-window #:init init #:draw draw #:on-close release-all!)</code></pre>
+      </div>
+
+      <p><code>release-all!</code> 只是把登记表按种类过一遍，大体等价于手写这几行（它按种类分组删，顺序略有不同）：</p>
+
+      <pre><code class="lang-racket">(gl-bind-vertex-array 0)        ; 先解绑，别删正在用的
+(program-delete program)
+(vertex-array-delete vao)
+(buffer-delete vbo)
+(buffer-delete ebo)            ; 矩形课才有</code></pre>
+
+      <p>注意「不删」和「删除」都不是画不画得出来的问题——画得好好的。区别只在资源有没有还给驱动。另外 <code>build-program</code> 已经把中间的 shader 对象自己删掉了（链接完就没用了），所以真正要你管的只有 program 本身。</p>
+
+      <div class="note warn">
+        <p><b>什么时候会真漏</b>教程每课只 <code>init</code> 一次、关窗就 <code>(exit 0)</code>，所以即使不删也看不出毛病。但下面这些场景会真漏：着色器/纹理热重载（每编一次漏一个 program）、上下文丢失或重建、一个进程开多个窗口、把 <code>init</code> 放在可重复触发的位置。养成「分配即登记」的习惯，这些场景就不必回头重写。</p>
+      </div>
+
+      <p>顺带说清两个容易混的点：</p>
+
+      <ul>
+        <li><b>解绑不等于删除</b>。<code>(gl-bind-buffer gl-array-buffer 0)</code> 只是把「当前绑定」清掉，那块缓冲还在显存里。</li>
+        <li><b>删除是「标记待删」</b>。<code>glDeleteBuffers</code> 之后驱动可能还在等正在跑的 draw 用完，真正释放晚一点——所以删完别再拿这个 id 用。</li>
+      </ul>
+
       <h2 id="s2-code">完整代码</h2>
 
       <p><code>02-hello-triangle/triangle.rkt</code>，画一个橙色三角形。这是 2.0 讲的便利层版本；raw 流程见 2.0 的骨架和 <code>compare/raw-triangle.rkt</code>：</p>
@@ -630,7 +690,8 @@
 ;; 本文件为了聚焦概念，使用 racket-shader-opengl 的便利层（build-program / buffer-new …）。
 
 (require racket/class
-         "../lib/window.rkt")
+         "../lib/window.rkt"
+         "../lib/gpu.rkt")
 
 ;; 三个顶点。一个顶点至少要有位置；vec-3 = 三个 float = (x y z)。
 ;; 坐标是标准坐标（-1..1，中心 0）。vec-array 把三个顶点打包成一条连续缓冲。
@@ -662,15 +723,15 @@
 
   ;; ① 编译两段着色器并链接成一个 program。
   ;;    racket-shader 的工具：自动查编译/链接状态，失败时给出报错行。
-  (set! program (build-program (gl-vertex-shader vert-src)
-                               (gl-fragment-shader frag-src)))
+  (set! program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                              (gl-fragment-shader frag-src))))
 
   ;; ② 把顶点数据搬进显存。
   ;;    这一步只依赖 gl-array-buffer 这个绑定，和 VAO 无关（VAO 没绑也能上传）。
   ;;    gl-gen-buffers(n)：生成 n 个缓冲，返回装 id 的向量；
   ;;    裸写法： (u32vector-ref (gl-gen-buffers 1) 0)
   ;;    buffer-new：取单个缓冲 id（= glGenBuffers(1) 的便利封装）。
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   ;; gl-bind-buffer(目标, id)：把这块缓冲绑到“顶点数据”目标上。
   ;;   gl-array-buffer 是 OpenGL 内置常量（C 里叫 GL_ARRAY_BUFFER），表示顶点数据用途。
   ;;   其他缓冲目标（UBO/SSBO/像素缓冲…）和用法常量见教程 2.2 的表。
@@ -686,7 +747,7 @@
 
   ;; ③ 建 VAO 并绑定，然后描述“怎么读”。这两步才依赖 VAO。
   ;;    VAO = 顶点数组对象，是“数据说明书”，记下每个属性槽怎么从缓冲里读。
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
   ;; gl-vertex-attrib-pointer(槽号, 分量数, 类型, 归一化, 步长, 偏移)
   ;;   = 0 号槽 / 每顶点 3 个分量 / 类型 float / 不归一化 / 紧密排列(0) / 从 0 开始
@@ -716,12 +777,12 @@
 (define-values (frame canvas)
   (make-window #:title "02 第一个三角形"
                #:init init
-               #:draw draw))
+               #:draw draw
+               #:on-close release-all!))
 (send frame show #t)
 
 ;; 复盘：VBO 存数据，VAO 记"怎么读"，program 是 GPU 上的程序，draw 用它们画图。
-;; 规律：先绑，再操作；尺寸用字节数；槽号两边要对齐，属性槽要先 enable。
-</code></pre>
+;; 规律：先绑，再操作；尺寸用字节数；槽号两边要对齐，属性槽要先 enable。</code></pre>
       </div>
 
       <p><code>02-hello-triangle/rectangle.rkt</code>，用索引画一个蓝色矩形：</p>
@@ -740,7 +801,8 @@
 ;; 本文件继续使用 02.0 介绍的便利层；raw 等价物见教程 2.0 的对照表。
 
 (require racket/class
-         "../lib/window.rkt")
+         "../lib/window.rkt"
+         "../lib/gpu.rkt")
 
 ;; 两段着色器：和上一课一样，只是颜色换成蓝色
 (define vert-src
@@ -772,16 +834,16 @@
 (define vao #f)
 
 (define (init)
-  (set! program (build-program (gl-vertex-shader vert-src)
-                               (gl-fragment-shader frag-src)))
+  (set! program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                              (gl-fragment-shader frag-src))))
 
   ;; 顶点数据上传：只依赖 gl-array-buffer 这个绑定，和 VAO 无关
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer vertices gl-static-draw)
 
   ;; 建 VAO、描述位置属性（这两步依赖 VAO）
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
   (gl-vertex-attrib-pointer 0 3 gl-float #f 0 0)
   (gl-enable-vertex-attrib-array 0)
@@ -789,7 +851,7 @@
   ;; 索引缓冲 EBO。
   ;; ★和 ARRAY_BUFFER 不同：ELEMENT_ARRAY_BUFFER 的绑定是 VAO 状态，
   ;;   所以必须在 VAO 还绑着的时候绑它，VAO 才会记住；画的时候才找得到。
-  (define ebo (buffer-new))
+  (define ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -802,16 +864,16 @@
   (program-use program)
   (gl-bind-vertex-array vao)
   ;; 和 gl-draw-arrays 的区别：不按顺序取顶点，而是按 EBO 里的下标取。
-  ;; gl-draw-elements(图元, 索引个数, 索引类型, 索引数据的字节偏移)
+  ;; gl-draw-elements(图元, 索引个数, 索引类型, 从第几个索引开始)
   (gl-draw-elements gl-triangles 6 gl-unsigned-short 0)
   (gl-bind-vertex-array 0))
 
 (define-values (frame canvas)
   (make-window #:title "02 矩形（索引绘制）"
                #:init init
-               #:draw draw))
-(send frame show #t)
-</code></pre>
+               #:draw draw
+               #:on-close release-all!))
+(send frame show #t)</code></pre>
       </div>
 
       <h2 id="s2-exercise">试试看</h2>
@@ -865,6 +927,10 @@
             <td>标准坐标</td>
             <td>顶点位置的坐标范围是 -1..1，中心是 0，超出会被裁掉</td>
           </tr>
+          <tr>
+            <td>GPU 资源</td>
+            <td>program / VBO / VAO / EBO / 纹理都在 GPU 侧，GC 不收；用 <code>own!</code> 登记，<code>#:on-close release-all!</code> 释放</td>
+          </tr>
         </tbody>
       </table>
 
@@ -890,6 +956,7 @@
         <li><a href="#s2-6">2.6 draw：每帧的固定套路</a></li>
         <li><a href="#s2-7">2.7 用索引画矩形：EBO</a></li>
         <li><a href="#s2-8">2.8 draw-arrays 与 draw-elements</a></li>
+        <li><a href="#s2-9">2.9 谁拥有这些对象：GPU 资源要显式释放</a></li>
         <li><a href="#s2-code">完整代码</a></li>
         <li><a href="#s2-exercise">试试看</a></li>
         <li><a href="#s2-summary">小结</a></li>

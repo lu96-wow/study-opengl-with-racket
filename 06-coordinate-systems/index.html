@@ -165,7 +165,8 @@
                #:init init
                #:draw draw
                ;; 窗口尺寸变化、viewport 重设之后被调用，参数是新的客户区宽高。
-               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))</code></pre>
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
+               #:on-close release-all!))</code></pre>
       </div>
 
       <figure class="figure">
@@ -416,6 +417,7 @@
          racket/gui
          racket/math
          "../lib/window.rkt"
+         "../lib/gpu.rkt"
          "../lib/matrix.rkt")
 
 ;; ------------------------------------------------------------
@@ -547,8 +549,8 @@
 (define u-proj-loc #f)
 
 (define (init)
-  (set! program (build-program (gl-vertex-shader vert-src)
-                               (gl-fragment-shader frag-src)))
+  (set! program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                              (gl-fragment-shader frag-src))))
 
   ;; ---- 深度缓冲 ----
   ;; 每个像素记住目前画到的最浅的深度；新片元比它更远就直接丢弃。
@@ -563,7 +565,7 @@
   (gl-cull-face gl-back)
 
   ;; ---- 纹理：创建对象、设参数、上传像素（同 04 课） ----
-  (set! texture (texture-new))
+  (set! texture (own! 'texture (texture-new)))
   (gl-bind-texture gl-texture-2d texture)
   (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-s gl-repeat)
   (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-t gl-repeat)
@@ -581,10 +583,10 @@
   (gl-bind-texture gl-texture-2d texture)
 
   ;; ---- VAO / VBO / EBO ----
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
 
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer vertex-data gl-static-draw)
   ;; 步长和偏移都从布局算出来，不写字面量：vec-3 + vec-2 = 5 个 float = 20 字节，
@@ -596,7 +598,7 @@
   (gl-vertex-attrib-pointer 1 2 gl-float #f stride uv-offset)
   (gl-enable-vertex-attrib-array 1)
 
-  (define ebo (buffer-new))
+  (define ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -622,7 +624,7 @@
   (uniform-set! u-view-loc 'mat-4 (m-translate (vec-3 0.0 0.0 -3.0)))
   ;; projection：竖直视场角 45°、aspect 取当前窗口宽高比（由 #:on-size 维护）、
   ;; near 0.1、far 100。投影矩阵每帧重算，所以 aspect 一改，下一帧就生效。
-  (uniform-set! u-proj-loc 'mat-4 (m-perspective (degrees->radians 45.0)
+  (uniform-set! u-proj-loc 'mat-4 (m-perspective (degrees-&gt;radians 45.0)
                                         aspect
                                         0.1 100.0))
 
@@ -642,7 +644,8 @@
                #:init init
                #:draw draw
                ;; 窗口尺寸变化、viewport 重设之后被调用，参数是新的客户区宽高。
-               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
+               #:on-close release-all!))
 (send frame show #t)
 
 ;; 立方体在转，需要定时器不断请求重绘。
@@ -673,6 +676,10 @@
         <li>在 <code>init</code> 里加一行 <code>(gl-depth-func gl-greater)</code>：遮挡关系整个反转，远的盖住近的——"遮挡方向是比较函数给的"这句话就变成看得见的了。看完删掉这一行，恢复默认的 <code>gl-less</code>。</li>
         <li>把右面索引从 <code>12 14 13</code> / <code>14 12 15</code> 改回 <code>12 13 14</code> / <code>14 15 12</code>：开着背面剔除时右面消失；改回来恢复。再把 <code>(gl-front-face gl-ccw)</code> 改成 <code>(gl-front-face gl-cw)</code>，看整个立方体如何内外翻转。</li>
       </ol>
+      <div class="note">
+        <p><b>GPU 资源</b>本节代码里每个 <code>*-new</code> / <code>build-program</code> 都用 <code>own!</code> 登记，关窗时 <code>release-all!</code> 统一删除。为什么这些句柄 GC 管不了，见 <a href="../02-hello-triangle/index.html#s2-9">02 · 2.9</a>。</p>
+      </div>
+
 
       <h2 id="s6-summary">小结</h2>
 

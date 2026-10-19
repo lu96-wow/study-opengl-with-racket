@@ -18,6 +18,7 @@
 (require racket/class
          racket/math                     ; degrees->radians
          "../lib/window.rkt"
+         "../lib/gpu.rkt"
          "../lib/matrix.rkt")            ; m-look-at / m-perspective / m-normal-matrix / …
 
 ;; ------------------------------------------------------------
@@ -229,8 +230,8 @@
 (glsl-uniform-setter! object-program vert-src frag-src)
 
 (define (init)
-  (set! object-program (build-program (gl-vertex-shader vert-src)
-                                      (gl-fragment-shader frag-src)))
+  (set! object-program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                                     (gl-fragment-shader frag-src))))
 
   ;; 画立体的东西就得开深度测试（06 课）。
   (gl-enable gl-depth-test)
@@ -243,7 +244,7 @@
 
   ;; diffuse map → 0 号槽。上传步骤和 04 课一模一样：选槽 → 绑纹理 → 设参数 →
   ;; 传像素 → 生成 mipmap → 把槽号告诉采样器。
-  (set! diffuse-map (texture-new))
+  (set! diffuse-map (own! 'texture (texture-new)))
   (gl-active-texture gl-texture0)
   (gl-bind-texture gl-texture-2d diffuse-map)
   (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-s gl-repeat)
@@ -258,7 +259,7 @@
 
   ;; specular map → 1 号槽。槽号常量连续：第 i 号槽写 (+ gl-texture0 i)，
   ;; 本课只有两张图，直接写 gl-texture1。
-  (set! spec-map (texture-new))
+  (set! spec-map (own! 'texture (texture-new)))
   (gl-active-texture gl-texture1)
   (gl-bind-texture gl-texture-2d spec-map)
   (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-s gl-repeat)
@@ -271,17 +272,17 @@
   (set-u-spec-map! 1)
 
   ;; ---- VAO / VBO / EBO ----
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
 
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer cube-data gl-static-draw)
   ;; shader 的 in 名和 shader-struct 字段名同名，glsl-vertex-layout! 按名字自动对齐：
   ;; slot 取自 shader 的 location，步长/偏移取自字段表（无字节字面量）。
   (glsl-vertex-layout! vert-src vertex)
 
-  (define ebo (buffer-new))
+  (define ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -320,7 +321,8 @@
                #:init init
                #:draw draw
                ;; 窗口尺寸变化、viewport 重设之后被调用，参数是新的客户区宽高。
-               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
+               #:on-close release-all!))
 (send frame show #t)
 
 ;; 本课没有 timer：立方体是静姿态，没有东西在动，就不必每 16ms 请求一次重绘（同 08 / 09）。

@@ -507,13 +507,14 @@
 ;; 于是顶点着色器第一次多传两个量出去（v-normal / v-frag-pos），法线属性（location 1）
 ;; 和"法线矩阵"也在本课第一次登场。
 ;;
-;; 顶点布局本课也换了写法：用 glsl-struct 把 shader 的 struct 镜像到 CPU 侧，
+;; 顶点布局本课也换了写法：用 shader-struct 把 shader 的 struct 镜像到 CPU 侧，
 ;; 步长和偏移全部由字段名给出——03/04 课的 shader-stride-bytes / shader-byte-size
 ;; 又往前走了一步。
 
 (require racket/class
          racket/math                     ; degrees-&gt;radians
          "../lib/window.rkt"
+         "../lib/gpu.rkt"
          "../lib/matrix.rkt")            ; m-look-at / m-perspective / m-normal-matrix / …
 
 ;; ------------------------------------------------------------
@@ -534,10 +535,10 @@
 ;;
 ;; (glsl-shader name form ...) 与 (glsl ...) 一样产出 shader，并额外把编译期接口表
 ;; 绑为 name-interface。裸等价： (define name (glsl ...))——但那样接口只能运行期用
-;; (glsl-program-interface name) 取，宏（vertex-layout / uniform-setter）用不了。
+;; (shader-program-interface name) 取，宏（vertex-layout / uniform-setter）用不了。
 (glsl-shader vert-src
   (version 330 core)
-  (layout (location 0) in vec-3 pos)       ; 属性名 = CPU 侧 glsl-struct 字段名
+  (layout (location 0) in vec-3 pos)       ; 属性名 = CPU 侧 shader-struct 字段名
   (layout (location 1) in vec-3 normal)
   (uniform mat-4 u-model)                   ; 局部 → 世界
   (uniform mat-4 u-view)                    ; 世界 → 观察
@@ -604,11 +605,11 @@
 ;; 三项光照全靠它。同一个空间角落在不同的面上法线不同（前面 (0,0,1)、右面 (1,0,0)…），
 ;; 所以还是 24 个顶点、每个面 4 个。
 ;;
-;; 布局不再手写：glsl-struct 把 shader 的 struct 镜像到 CPU 侧——字段名、类型、顺序
+;; 布局不再手写：shader-struct 把 shader 的 struct 镜像到 CPU 侧——字段名、类型、顺序
 ;; 和 shader 里一致，步长和偏移就自动有了。03/04 课的 shader-stride-bytes /
 ;; shader-byte-size 已经消灭了字节字面量，这一步再进一步：偏移不再按"第几个字段"数，
 ;; 而是按名字自动对齐（见下面 init 里的 glsl-vertex-layout!）。
-(glsl-struct vertex (vec-3 pos) (vec-3 normal))
+(shader-struct vertex (vec-3 pos) (vec-3 normal))
 
 (define cube-verts
   (list
@@ -644,7 +645,7 @@
    (vertex (vec-3 -0.5  0.5  0.5) (vec-3 0.0 1.0 0.0))))
 
 ;; 每个顶点铺平成一个 f32vector（6 个 float = 3 位置 + 3 法线），24 个接起来就是
-;; 整条 VBO。一个字节字面量都没有：交错格式由 glsl-struct 的字段表决定。
+;; 整条 VBO。一个字节字面量都没有：交错格式由 shader-struct 的字段表决定。
 (define cube-data (apply concat-vecs (map vertex-&gt;f32vector cube-verts)))
 
 ;; 每个面两个三角形、6 个下标，六个面合计 36（同 06 / 08 课）。
@@ -691,22 +692,22 @@
 (glsl-uniform-setter! lamp-program lamp-vert-src lamp-frag-src #:prefix "lamp-")
 
 (define (init)
-  (set! object-program (build-program (gl-vertex-shader vert-src)
-                                      (gl-fragment-shader frag-src)))
-  (set! lamp-program (build-program (gl-vertex-shader lamp-vert-src)
-                                    (gl-fragment-shader lamp-frag-src)))
+  (set! object-program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                                     (gl-fragment-shader frag-src))))
+  (set! lamp-program (own! 'program (build-program (gl-vertex-shader lamp-vert-src)
+                                                   (gl-fragment-shader lamp-frag-src))))
 
   ;; 画立体的东西就得开深度测试（06 课）。
   (gl-enable gl-depth-test)
 
   ;; ---- VAO / VBO / EBO ----
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
 
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer cube-data gl-static-draw)
-  ;; 属性布局：shader 的 in 名和 glsl-struct 字段名同名（pos / normal），
+  ;; 属性布局：shader 的 in 名和 shader-struct 字段名同名（pos / normal），
   ;; glsl-vertex-layout! 按名字自动对齐：slot 取自 shader 的 location，
   ;; 分量/类型/步长/偏移取自 struct 字段表；改名/类型不符会在编译期报错。
   ;; 裸写法：
@@ -716,7 +717,7 @@
   ;;   (gl-enable-vertex-attrib-array 1)
   (glsl-vertex-layout! vert-src vertex)
 
-  (define ebo (buffer-new))
+  (define ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -766,7 +767,8 @@
                #:init init
                #:draw draw
                ;; 窗口尺寸变化、viewport 重设之后被调用，参数是新的客户区宽高。
-               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
+               #:on-close release-all!))
 (send frame show #t)
 
 ;; 本课没有 timer：立方体是静姿态，没有东西在动，就不必每 16ms 请求一次重绘（同 08 课）。
@@ -802,6 +804,10 @@
         <li>给 <code>model</code> 加一个非等比缩放：<code>(define scaled (mat4-mul (m-scale (vec-3 1.5 1.0 1.0)) model))</code>，先照原样上传 <code>(m-normal-matrix scaled)</code>——法线仍然垂直于表面、画面正常。再把上传换成 naive 版本（只取左上 3×3、去掉逆转置；现成的写法在本课源码文件末尾的注释里），正面的高光立刻暗下去：法线被 x 方向拉走约 11.5°，<code>dot(v, r)</code> 跟着偏，高光那一项从 0.41 只剩 0.15；把 1.5 换成 4.0，法线偏了 42.6°、高光彻底消失——「光照错在哪」看得一清二楚。改完记得换回来。</li>
         <li>把 <code>light-pos</code>（以及灯立方体的位置）的 z 从 <code>2.0</code> 改成 <code>0.0</code>——也就是 08 课的机位：灯会走进画面右上角，同时高光从正面中央挪开。对照两课就能看清「光的位置」同时管着两件事：灯立方体画在哪、以及三项光照各自往哪个方向算。</li>
       </ol>
+      <div class="note">
+        <p><b>GPU 资源</b>本节代码里每个 <code>*-new</code> / <code>build-program</code> 都用 <code>own!</code> 登记，关窗时 <code>release-all!</code> 统一删除。为什么这些句柄 GC 管不了，见 <a href="../02-hello-triangle/index.html#s2-9">02 · 2.9</a>。</p>
+      </div>
+
 
       <h2 id="s9-summary">小结</h2>
 

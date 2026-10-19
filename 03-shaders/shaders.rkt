@@ -9,7 +9,8 @@
 
 (require racket/class
          racket/gui
-         "../lib/window.rkt")
+         "../lib/window.rkt"
+         "../lib/gpu.rkt")
 
 ;; 顶点着色器。
 ;; GLSL 的类型：float/int/bool 是标量，vec-2/vec-3/vec-4 是向量（浮点字面量要写 1.0）。
@@ -52,12 +53,12 @@
 (define u-time-loc #f)
 
 (define (init)
-  (set! program (build-program (gl-vertex-shader vert-src)
-                               (gl-fragment-shader frag-src)))
+  (set! program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                              (gl-fragment-shader frag-src))))
 
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer vertex-data gl-static-draw)
 
@@ -94,7 +95,8 @@
 (define-values (frame canvas)
   (make-window #:title "03 着色器"
                #:init init
-               #:draw draw))
+               #:draw draw
+               #:on-close release-all!))
 (send frame show #t)
 
 ;; uniform 每帧在变，需要定时器不断请求重绘

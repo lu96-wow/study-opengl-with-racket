@@ -198,6 +198,7 @@
 (require racket/class
          racket/math                     ; degrees-&gt;radians
          "../lib/window.rkt"
+         "../lib/gpu.rkt"
          "../lib/matrix.rkt")            ; m-look-at / m-perspective / m-translate / m-scale
 
 ;; ------------------------------------------------------------
@@ -320,10 +321,10 @@
 
 (define (init)
   ;; 同一份顶点源码，配两份不同的片元，链接出两个 program。
-  (set! object-program (build-program (gl-vertex-shader vert-src)
-                                      (gl-fragment-shader object-frag-src)))
-  (set! lamp-program (build-program (gl-vertex-shader vert-src)
-                                    (gl-fragment-shader lamp-frag-src)))
+  (set! object-program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                                     (gl-fragment-shader object-frag-src))))
+  (set! lamp-program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                                   (gl-fragment-shader lamp-frag-src))))
 
   ;; 画立体的东西就得开深度测试，否则后画的片元盖住先画的、与远近无关（06 课）。
   (gl-enable gl-depth-test)
@@ -331,17 +332,17 @@
   ;; ---- VAO / VBO / EBO ----
   ;; VAO 里只开 0 号槽：位置。两个 program 的顶点着色器都只声明 layout 0，
   ;; 所以这一个 VAO 喂给谁都对得上。
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
 
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer vertex-data gl-static-draw)
   ;; 只有一个属性：步长就是 vec-3 的大小、偏移 0，都从布局算出来，不写字面量。
   (gl-vertex-attrib-pointer 0 3 gl-float #f (shader-byte-size 'vec-3) 0)
   (gl-enable-vertex-attrib-array 0)
 
-  (define ebo (buffer-new))
+  (define ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -403,7 +404,8 @@
                #:init init
                #:draw draw
                ;; 窗口尺寸变化、viewport 重设之后被调用，参数是新的客户区宽高。
-               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
+               #:on-close release-all!))
 (send frame show #t)
 
 ;; 本课没有 timer：场景是静的、没有东西在动，就不必每 16ms 请求一次重绘（接 01 课）。
@@ -433,6 +435,10 @@
         <li>把灯的片元也改成做乘法：给 <code>lamp-frag-src</code> 加一个 <code>(uniform vec-3 u-object-color)</code>，把输出换成 <code>(vec-4 (* u-object-color u-light-color) 1.0)</code>，再给灯上传一个偏暗的物体色（比如 <code>(vec-3 0.5 0.5 0.5)</code>）。灯自己跟着变暗——这就是它必须另起一个 program 的原因。</li>
         <li>把 <code>lamp-pos</code> 改成 <code>(vec-3 1.2 1.0 -2.0)</code>，让灯跑到物体背后（变成屏幕右下方一个小方块）：物体的颜色一点都不变。本课的光没有方向、没有距离，物体色乘光色与灯摆在哪无关。方向要等 09 课（法向与点乘），衰减要等 11 课。</li>
       </ol>
+      <div class="note">
+        <p><b>GPU 资源</b>本节代码里每个 <code>*-new</code> / <code>build-program</code> 都用 <code>own!</code> 登记，关窗时 <code>release-all!</code> 统一删除。为什么这些句柄 GC 管不了，见 <a href="../02-hello-triangle/index.html#s2-9">02 · 2.9</a>。</p>
+      </div>
+
 
       <h2 id="s8-summary">小结</h2>
 

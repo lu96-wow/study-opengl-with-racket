@@ -10,7 +10,8 @@
 ;; 本文件继续使用 02.0 介绍的便利层；raw 等价物见教程 2.0 的对照表。
 
 (require racket/class
-         "../lib/window.rkt")
+         "../lib/window.rkt"
+         "../lib/gpu.rkt")
 
 ;; 两段着色器：和上一课一样，只是颜色换成蓝色
 (define vert-src
@@ -42,16 +43,16 @@
 (define vao #f)
 
 (define (init)
-  (set! program (build-program (gl-vertex-shader vert-src)
-                               (gl-fragment-shader frag-src)))
+  (set! program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                              (gl-fragment-shader frag-src))))
 
   ;; 顶点数据上传：只依赖 gl-array-buffer 这个绑定，和 VAO 无关
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer vertices gl-static-draw)
 
   ;; 建 VAO、描述位置属性（这两步依赖 VAO）
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
   (gl-vertex-attrib-pointer 0 3 gl-float #f 0 0)
   (gl-enable-vertex-attrib-array 0)
@@ -59,7 +60,7 @@
   ;; 索引缓冲 EBO。
   ;; ★和 ARRAY_BUFFER 不同：ELEMENT_ARRAY_BUFFER 的绑定是 VAO 状态，
   ;;   所以必须在 VAO 还绑着的时候绑它，VAO 才会记住；画的时候才找得到。
-  (define ebo (buffer-new))
+  (define ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -79,5 +80,6 @@
 (define-values (frame canvas)
   (make-window #:title "02 矩形（索引绘制）"
                #:init init
-               #:draw draw))
+               #:draw draw
+               #:on-close release-all!))
 (send frame show #t)

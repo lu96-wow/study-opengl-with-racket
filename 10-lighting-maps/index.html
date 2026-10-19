@@ -187,7 +187,7 @@
 
   ;; diffuse map → 0 号槽。上传步骤和 04 课一模一样：选槽 → 绑纹理 → 设参数 →
   ;; 传像素 → 生成 mipmap → 把槽号告诉采样器。
-  (set! diffuse-map (texture-new))
+  (set! diffuse-map (own! 'texture (texture-new)))
   (gl-active-texture gl-texture0)
   (gl-bind-texture gl-texture-2d diffuse-map)
   (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-s gl-repeat)
@@ -202,7 +202,7 @@
 
   ;; specular map → 1 号槽。槽号常量连续：第 i 号槽写 (+ gl-texture0 i)，
   ;; 本课只有两张图，直接写 gl-texture1。
-  (set! spec-map (texture-new))
+  (set! spec-map (own! 'texture (texture-new)))
   (gl-active-texture gl-texture1)
   (gl-bind-texture gl-texture-2d spec-map)
   (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-s gl-repeat)
@@ -245,6 +245,7 @@
 (require racket/class
          racket/math                     ; degrees-&gt;radians
          "../lib/window.rkt"
+         "../lib/gpu.rkt"
          "../lib/matrix.rkt")            ; m-look-at / m-perspective / m-normal-matrix / …
 
 ;; ------------------------------------------------------------
@@ -373,9 +374,9 @@
 ;; 还是 09 课那个立方体、同样的 24 顶点 / 36 索引（06 课解释过为什么不是 8 个）。
 ;; 本课每个顶点又多带一条 UV：贴图要它才知道"这个角取图的哪里"。
 ;;
-;; 布局仍旧交给 glsl-struct：字段表里多加一个 (vec-2 uv)，步长自己变成 32 字节，
+;; 布局仍旧交给 shader-struct：字段表里多加一个 (vec-2 uv)，步长自己变成 32 字节，
 ;; uv 的偏移也自己算出来——下面的 attrib 指针照样只写字段名，一个字节字面量都没有。
-(glsl-struct vertex (vec-3 pos) (vec-3 normal) (vec-2 uv))
+(shader-struct vertex (vec-3 pos) (vec-3 normal) (vec-2 uv))
 
 ;; 每个面的 4 个角依次配 UV (0,0) (1,0) (1,1) (0,1)：贴图正好铺满一个面、不重复也不拉伸。
 ;; 于是每个面的中心都是 UV (0.5,0.5)——specular map 的白圆就落在面的正中央，
@@ -414,7 +415,7 @@
    (vertex (vec-3 -0.5  0.5  0.5) (vec-3 0.0 1.0 0.0) (vec-2 0.0 1.0))))
 
 ;; 每个顶点铺平成一个 f32vector（8 个 float = 3 位置 + 3 法线 + 2 UV），24 个接起来
-;; 就是整条 VBO。交错格式仍由 glsl-struct 的字段表决定，代码里没有字节字面量。
+;; 就是整条 VBO。交错格式仍由 shader-struct 的字段表决定，代码里没有字节字面量。
 (define cube-data (apply concat-vecs (map vertex-&gt;f32vector cube-verts)))
 
 ;; 每个面两个三角形、6 个下标，六个面合计 36（同 06 / 08 / 09 课）。
@@ -456,8 +457,8 @@
 (glsl-uniform-setter! object-program vert-src frag-src)
 
 (define (init)
-  (set! object-program (build-program (gl-vertex-shader vert-src)
-                                      (gl-fragment-shader frag-src)))
+  (set! object-program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                                     (gl-fragment-shader frag-src))))
 
   ;; 画立体的东西就得开深度测试（06 课）。
   (gl-enable gl-depth-test)
@@ -470,7 +471,7 @@
 
   ;; diffuse map → 0 号槽。上传步骤和 04 课一模一样：选槽 → 绑纹理 → 设参数 →
   ;; 传像素 → 生成 mipmap → 把槽号告诉采样器。
-  (set! diffuse-map (texture-new))
+  (set! diffuse-map (own! 'texture (texture-new)))
   (gl-active-texture gl-texture0)
   (gl-bind-texture gl-texture-2d diffuse-map)
   (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-s gl-repeat)
@@ -485,7 +486,7 @@
 
   ;; specular map → 1 号槽。槽号常量连续：第 i 号槽写 (+ gl-texture0 i)，
   ;; 本课只有两张图，直接写 gl-texture1。
-  (set! spec-map (texture-new))
+  (set! spec-map (own! 'texture (texture-new)))
   (gl-active-texture gl-texture1)
   (gl-bind-texture gl-texture-2d spec-map)
   (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-s gl-repeat)
@@ -498,17 +499,17 @@
   (set-u-spec-map! 1)
 
   ;; ---- VAO / VBO / EBO ----
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
 
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer cube-data gl-static-draw)
-  ;; shader 的 in 名和 glsl-struct 字段名同名，glsl-vertex-layout! 按名字自动对齐：
+  ;; shader 的 in 名和 shader-struct 字段名同名，glsl-vertex-layout! 按名字自动对齐：
   ;; slot 取自 shader 的 location，步长/偏移取自字段表（无字节字面量）。
   (glsl-vertex-layout! vert-src vertex)
 
-  (define ebo (buffer-new))
+  (define ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -529,7 +530,7 @@
   (set-u-model! model)
   (set-u-view! view)
   (set-u-proj! proj)
-  ;; 法线矩阵是 mat-3，uniform-set! 自动选 matrix-3fv 且 transpose 固定 #f（同 09 课）。
+  ;; 法线矩阵是 mat-3，setter 内部自动选 matrix-3fv 且 transpose 固定 #f（同 09 课）。
   (set-u-normal-matrix! (m-normal-matrix model))
   (set-u-light-pos! light-pos)
   (set-u-light-color! light-color)
@@ -547,7 +548,8 @@
                #:init init
                #:draw draw
                ;; 窗口尺寸变化、viewport 重设之后被调用，参数是新的客户区宽高。
-               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
+               #:on-close release-all!))
 (send frame show #t)
 
 ;; 本课没有 timer：立方体是静姿态，没有东西在动，就不必每 16ms 请求一次重绘（同 08 / 09）。
@@ -585,6 +587,10 @@
         <li>把 <code>make-checker-texture</code> 换成 04 课的 <code>make-radial-texture</code>（径向渐变那张，原样抄过来）：颜色随位置从中心到边缘渐暗，而高光的位置一点不动——两项各管各的。</li>
         <li>故意乘错项：让掩码去乘 ambient——<code>(vec-3 lit (+ (* ambient diffuse-color (vec-3 spec-mask)) (* diff diffuse-color) (vec-3 (* spec spec-mask))))</code>。ambient 是三项里唯一「处处都有」的亮度，于是背光的左面和底面也浮出一块圆斑（圆内按棋盘颜色染了 0.1 的保底光、圆外纯黑），而 09 课的背光面本是整片均匀的暗。掩码本是高光开关，乘到 ambient 上就变成保底光的开关了——贴图乘进哪一项，它管的就是哪一项。</li>
       </ol>
+      <div class="note">
+        <p><b>GPU 资源</b>本节代码里每个 <code>*-new</code> / <code>build-program</code> 都用 <code>own!</code> 登记，关窗时 <code>release-all!</code> 统一删除。为什么这些句柄 GC 管不了，见 <a href="../02-hello-triangle/index.html#s2-9">02 · 2.9</a>。</p>
+      </div>
+
 
       <h2 id="s10-summary">小结</h2>
 

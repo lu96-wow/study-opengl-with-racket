@@ -311,7 +311,8 @@ void main() {
 
 (require racket/class
          racket/gui
-         "../lib/window.rkt")
+         "../lib/window.rkt"
+         "../lib/gpu.rkt")
 
 ;; 顶点着色器。
 ;; GLSL 的类型：float/int/bool 是标量，vec-2/vec-3/vec-4 是向量（浮点字面量要写 1.0）。
@@ -354,12 +355,12 @@ void main() {
 (define u-time-loc #f)
 
 (define (init)
-  (set! program (build-program (gl-vertex-shader vert-src)
-                               (gl-fragment-shader frag-src)))
+  (set! program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                              (gl-fragment-shader frag-src))))
 
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer vertex-data gl-static-draw)
 
@@ -396,14 +397,14 @@ void main() {
 (define-values (frame canvas)
   (make-window #:title "03 着色器"
                #:init init
-               #:draw draw))
+               #:draw draw
+               #:on-close release-all!))
 (send frame show #t)
 
 ;; uniform 每帧在变，需要定时器不断请求重绘
 (define timer
   (new timer% [interval 16]
-              [notify-callback (lambda () (send canvas refresh))]))
-</code></pre>
+              [notify-callback (lambda () (send canvas refresh))]))</code></pre>
       </div>
 
       <h2 id="s3-exercise">试试看</h2>
@@ -414,6 +415,10 @@ void main() {
         <li>把 <code>color-offset</code> 故意写成 <code>0</code>：颜色会从位置那几个字节开始读，画面颜色错乱；改回来对比一下。</li>
         <li>把 <code>(set! v-color a-color)</code> 换成 <code>(set! v-color (vec-3 1.0 1.0 1.0))</code>：渐变消失，三角形变成一片白（亮度脉动还在）。</li>
       </ol>
+      <div class="note">
+        <p><b>GPU 资源</b>本节代码里每个 <code>*-new</code> / <code>build-program</code> 都用 <code>own!</code> 登记，关窗时 <code>release-all!</code> 统一删除。为什么这些句柄 GC 管不了，见 <a href="../02-hello-triangle/index.html#s2-9">02 · 2.9</a>。</p>
+      </div>
+
 
       <h2 id="s3-summary">小结</h2>
 

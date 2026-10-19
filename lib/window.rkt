@@ -29,6 +29,11 @@
 ;;
 ;; #:on-focus 在画布获得/失去键盘焦点时调用，参数是布尔值。窗口切走时可以用它
 ;; 清空按键状态，避免"按住键切窗口，回来还在走"的粘键问题。
+;;
+;; #:on-close 在用户关窗、进程退出之前调用一次，而且 GL 上下文还活着——
+;; GPU 对象只能在这时删（上下文一没，句柄就作废了）。02 课起各课都传
+;; release-all!（见 lib/gpu.rkt），把这一帧创建的对象按种类删干净。
+;; 回调里出错只打印，不妨碍退出。
 
 (provide make-window)
 
@@ -44,7 +49,8 @@
                      #:on-key [on-key (lambda (key) (void))]
                      #:on-key-up [on-key-up (lambda (key) (void))]
                      #:on-size [on-size (lambda (cw ch) (void))]
-                     #:on-focus [on-focus (lambda (on?) (void))])
+                     #:on-focus [on-focus (lambda (on?) (void))]
+                     #:on-close [on-close (lambda () (void))])
   ;; core profile 上下文（只用现代可编程管线）
   (define cfg (new gl-config%))
   (send cfg set-legacy? #f)
@@ -52,10 +58,27 @@
   (when (positive? ms)
     (send cfg set-multisample-size ms))
 
-  ;; 点 X 时真正退出进程
+  ;; 关窗前的收尾回调。名字另存成 close-cb：类体里 on-close 是方法名，直接引用会歧义。
+  (define close-cb on-close)
+
+  ;; 回调要借助画布的 with-gl-context，但画布是 frame 的子窗口、要等 frame 建好才建，
+  ;; 所以先占个位置，下面真正创建时 set! 进来。
+  (define canvas #f)
+
+  ;; 在 GL 上下文还活着时跑收尾回调。没初始化成功（画布从没绘制过）时
+  ;; with-gl-context 可能抛错——catch 掉，关窗不能被它卡住。
+  (define (run-close-cb!)
+    (when canvas
+      (with-handlers ([exn:fail?
+                       (lambda (e)
+                         (eprintf "on-close 回调出错（忽略）：~a\n" (exn-message e)))])
+        (send canvas with-gl-context close-cb))))
+
+  ;; 点 X 时真正退出进程：先释放 GPU 对象，再退出
   (define closeable-frame%
     (class frame%
       (define/augment (on-close)
+        (run-close-cb!)
         (inner (void) on-close)
         (exit 0))
       (super-new)))
@@ -113,8 +136,8 @@
       (super-new)))
 
   (define frame (new closeable-frame% [label title] [width w] [height h]))
-  (define canvas (new gl-canvas%
-                      [style '(gl no-autoclear)]
-                      [gl-config cfg]
-                      [parent frame]))
+  (set! canvas (new gl-canvas%
+                    [style '(gl no-autoclear)]
+                    [gl-config cfg]
+                    [parent frame]))
   (values frame canvas))

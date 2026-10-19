@@ -38,6 +38,7 @@ void main() {
 
 (define program #f)
 (define vao #f)
+(define vbo #f)   ; 提到顶层：shutdown 要能拿到它
 
 ;; ---- 手写 compile-shader（racket-shader 用一行 shader-compile 代替）----
 (define (shader-info-log shader)
@@ -77,7 +78,7 @@ void main() {
   (glDeleteShader fs)
 
   ;; 上传顶点数据
-  (define vbo (u32vector-ref (glGenBuffers 1) 0))
+  (set! vbo (u32vector-ref (glGenBuffers 1) 0))
   (glBindBuffer GL_ARRAY_BUFFER vbo)
   (glBufferData GL_ARRAY_BUFFER (gl-vector-sizeof vertices) vertices GL_STATIC_DRAW)
 
@@ -96,13 +97,31 @@ void main() {
   (glDrawArrays GL_TRIANGLES 0 3)
   (glBindVertexArray 0))
 
+;; ---- 释放：raw 版自己写，和教程 lib/gpu.rkt 的 release-all! 等价 ----
+;; 必须在 GL 上下文还活着的时候调（关窗时、exit 之前）。
+;; glDelete* 是「标记待删」：驱动会等正在跑的 draw 用完再真正释放。
+(define (shutdown)
+  (glBindVertexArray 0)                       ; 先解绑，别删正在用的
+  (glUseProgram 0)
+  (glDeleteProgram program)
+  (glDeleteVertexArrays 1 (u32vector vao))
+  (glDeleteBuffers 1 (u32vector vbo)))
+
 ;; ---- 窗口骨架：教程的 lib/window.rkt 用不了，只能自己抄 ----
 (define cfg (new gl-config%))
 (send cfg set-legacy? #f)
 
+;; on-close 里要先在上下文里跑 shutdown，再 exit；canvas 建得比 frame 晚，先占位。
+(define canvas #f)
+(define (run-shutdown!)
+  (when canvas
+    (with-handlers ([exn:fail? (lambda (e) (eprintf "shutdown 出错（忽略）：~a\n" (exn-message e)))])
+      (send canvas with-gl-context shutdown))))
+
 (define gl-frame%
   (class frame%
     (define/augment (on-close)
+      (run-shutdown!)
       (inner (void) on-close)
       (exit 0))
     (super-new)))
@@ -125,8 +144,8 @@ void main() {
     (super-new)))
 
 (define frame (new gl-frame% [label "raw opengl"] [width 800] [height 600]))
-(define canvas (new gl-canvas%
-                    [style '(gl no-autoclear)]
-                    [gl-config cfg]
-                    [parent frame]))
+(set! canvas (new gl-canvas%
+                  [style '(gl no-autoclear)]
+                  [gl-config cfg]
+                  [parent frame]))
 (send frame show #t)

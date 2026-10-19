@@ -337,6 +337,7 @@
           <tr><td><code>#:on-key</code></td><td><code>on-char</code> 收到的按键<strong>按下</strong>事件</td><td>需要键盘的课才用</td></tr>
           <tr><td><code>#:on-key-up</code></td><td><code>on-char</code> 收到的按键<strong>松开</strong>事件</td><td>要判断“一直按住”时，和 <code>#:on-key</code> 配对使用（07.6）</td></tr>
           <tr><td><code>#:on-focus</code></td><td>画布获得/失去键盘焦点</td><td>失焦时清空按键状态，避免粘键</td></tr>
+          <tr><td><code>#:on-close</code></td><td>关窗、<code>(exit 0)</code> 之前那一步</td><td>在 GL 上下文还活着时释放 GPU 对象（<a href="../02-hello-triangle/index.html#s2-9">02.9</a>）；01 还没有对象，可以先不管</td></tr>
         </tbody>
       </table>
 
@@ -441,8 +442,7 @@
 ;; 回调里请求重绘，系统随后调 on-paint —— 定时器只请求，绘制永远在 on-paint。
 (define timer
   (new timer% [interval 16]
-              [notify-callback (lambda () (send canvas refresh))]))
-</code></pre>
+              [notify-callback (lambda () (send canvas refresh))]))</code></pre>
       </div>
 
       <h2 id="s1-exercise">试试看</h2>

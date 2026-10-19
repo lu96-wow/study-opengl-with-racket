@@ -22,6 +22,7 @@
          racket/gui                     ; timer%
          racket/math                    ; degrees->radians
          "../lib/window.rkt"
+         "../lib/gpu.rkt"
          "../lib/matrix.rkt"
          "../lib/text-texture.rkt")
 
@@ -144,17 +145,17 @@
 ;; 四、初始化
 ;; ------------------------------------------------------------
 (define (init)
-  (set! line-program (build-program (gl-vertex-shader line-vert)
-                                    (gl-fragment-shader line-frag)))
-  (set! text-program (build-program (gl-vertex-shader text-vert)
-                                    (gl-fragment-shader text-frag)))
+  (set! line-program (own! 'program (build-program (gl-vertex-shader line-vert)
+                                                   (gl-fragment-shader line-frag))))
+  (set! text-program (own! 'program (build-program (gl-vertex-shader text-vert)
+                                                   (gl-fragment-shader text-frag))))
 
   (gl-enable gl-depth-test)
 
   ;; ---- 线框立方体 VAO/VBO ----
-  (set! line-vao (vertex-array-new))
+  (set! line-vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array line-vao)
-  (define line-vbo (buffer-new))
+  (define line-vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer line-vbo)
   (buffer-upload gl-array-buffer line-data gl-static-draw)
   (gl-vertex-attrib-pointer 0 3 gl-float #f 0 0)
@@ -162,13 +163,13 @@
   (gl-bind-vertex-array 0)
 
   ;; ---- 文字 quad VAO/VBO/EBO ----
-  (set! text-vao (vertex-array-new))
+  (set! text-vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array text-vao)
-  (define text-vbo (buffer-new))
+  (define text-vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer text-vbo)
   (buffer-upload gl-array-buffer text-quad-data gl-static-draw)
   (glsl-vertex-layout! text-vert text-quad)
-  (define text-ebo (buffer-new))
+  (define text-ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer text-ebo)
   (buffer-upload gl-element-array-buffer text-quad-indices gl-static-draw)
   (gl-bind-vertex-array 0)
@@ -261,7 +262,8 @@
                #:height win-h
                #:init init
                #:draw draw
-               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
+               #:on-close release-all!))
 (send frame show #t)
 
 ;; 相机在动，需要定时器不断请求重绘

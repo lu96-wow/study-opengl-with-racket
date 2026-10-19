@@ -17,6 +17,7 @@
 (require racket/class
          racket/math                     ; degrees->radians
          "../lib/window.rkt"
+         "../lib/gpu.rkt"
          "../lib/matrix.rkt")            ; m-look-at / m-perspective / m-translate / m-scale
 
 ;; ------------------------------------------------------------
@@ -139,10 +140,10 @@
 
 (define (init)
   ;; 同一份顶点源码，配两份不同的片元，链接出两个 program。
-  (set! object-program (build-program (gl-vertex-shader vert-src)
-                                      (gl-fragment-shader object-frag-src)))
-  (set! lamp-program (build-program (gl-vertex-shader vert-src)
-                                    (gl-fragment-shader lamp-frag-src)))
+  (set! object-program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                                     (gl-fragment-shader object-frag-src))))
+  (set! lamp-program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                                   (gl-fragment-shader lamp-frag-src))))
 
   ;; 画立体的东西就得开深度测试，否则后画的片元盖住先画的、与远近无关（06 课）。
   (gl-enable gl-depth-test)
@@ -150,17 +151,17 @@
   ;; ---- VAO / VBO / EBO ----
   ;; VAO 里只开 0 号槽：位置。两个 program 的顶点着色器都只声明 layout 0，
   ;; 所以这一个 VAO 喂给谁都对得上。
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
 
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer vertex-data gl-static-draw)
   ;; 只有一个属性：步长就是 vec-3 的大小、偏移 0，都从布局算出来，不写字面量。
   (gl-vertex-attrib-pointer 0 3 gl-float #f (shader-byte-size 'vec-3) 0)
   (gl-enable-vertex-attrib-array 0)
 
-  (define ebo (buffer-new))
+  (define ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -222,7 +223,8 @@
                #:init init
                #:draw draw
                ;; 窗口尺寸变化、viewport 重设之后被调用，参数是新的客户区宽高。
-               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
+               #:on-close release-all!))
 (send frame show #t)
 
 ;; 本课没有 timer：场景是静的、没有东西在动，就不必每 16ms 请求一次重绘（接 01 课）。

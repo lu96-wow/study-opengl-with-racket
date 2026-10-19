@@ -151,6 +151,22 @@ API = 数据搬运 + 状态设置 + 计算启动
 
 ---
 
+### 3.4 GPU 资源的所有权
+
+`buffer-new` / `vertex-array-new` / `texture-new` / `build-program` 返回的是 **GPU 侧句柄**：内存在驱动里，Racket 堆里只有那个整数，GC 看不见也不能回收。`racket-shader-opengl` 因此不挂终结器（删除必须在拥有上下文的线程上执行，见其 DESIGN.md §3.1）。
+
+约定：
+
+- **每课都登记、每课都释放**：分配时 `(own! 'buffer (buffer-new))`，窗口关闭时 `#:on-close release-all!` 在上下文还活着的时候排空登记表（`lib/gpu.rkt`）。
+- `release-all!` 就是「终结器只入队、GL 线程排空」这条正确做法的显式版：时机确定、顺序固定，不依赖 GC。
+- **Racket 值不用管**：`vec-array` / `vec-3` / shader-struct 都是普通值，上传是复制（`glBufferData` 语义），复制完就是 GC 的事。
+- 手写 raw 的对照见 `compare/raw-triangle.rkt`：那里用显式 `glDeleteProgram` / `glDeleteVertexArrays` / `glDeleteBuffers` 说明同一件事。
+
+判据一句话：**返回值是指向 GPU 侧分配的整数句柄 → 要删；是 Racket 值 → 不用管。**
+
+---
+
+
 ## 4. 写作规则
 
 以后新增或修改章节，按这套规则检查。

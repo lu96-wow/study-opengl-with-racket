@@ -36,7 +36,7 @@
         (list "02" "第一个三角形"
               (list "02-hello-triangle/triangle.rkt"
                     "02-hello-triangle/rectangle.rkt")
-              "VBO 存数据、VAO 记怎么读、EBO 省下重复顶点")
+              "VBO 存数据、VAO 记怎么读、EBO 省重复顶点；GPU 句柄要显式释放")
         (list "03" "着色器"
               (list "03-shaders/shaders.rkt")
               "GLSL 类型、阶段间传值、uniform、多属性交错布局")

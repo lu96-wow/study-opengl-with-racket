@@ -297,7 +297,7 @@
 ;; 上的方向几乎不变。所以本课把 u-light-pos 换成 u-light-dir——只留方向。
 ;;
 ;; 11 课一节三个文件（directional / point / spot），共用同一套骨架：
-;;   · pos + normal 的 glsl-struct 顶点布局、法线矩阵、深度测试、相机（同 09 课）
+;;   · pos + normal 的 shader-struct 顶点布局、法线矩阵、深度测试、相机（同 09 课）
 ;;   · 四个立方体、一份 VAO、一个 program、不画灯立方体（位置光才有"灯在哪"）
 ;; 差别只在片元那几行。本文件与 point.rkt 的差别只有三处：
 ;;   ① uniform：u-light-dir（一个方向）顶掉 point 的 u-light-pos + 三个衰减系数
@@ -308,6 +308,7 @@
 (require racket/class
          racket/math                     ; degrees-&gt;radians
          "../lib/window.rkt"
+         "../lib/gpu.rkt"
          "../lib/matrix.rkt")            ; m-look-at / m-perspective / m-normal-matrix / …
 
 ;; ------------------------------------------------------------
@@ -368,9 +369,9 @@
 ;; 三、立方体几何：24 个顶点，每个带位置 + 法线（同 09 课）
 ;; ------------------------------------------------------------
 ;; 同一个立方体、同样的 24 顶点 / 36 索引：每个面摊自己的一份顶点，因为每个面的
-;; 法线不同（前面 (0,0,1)、右面 (1,0,0)…）。布局仍用 glsl-struct 镜像到 CPU 侧，
+;; 法线不同（前面 (0,0,1)、右面 (1,0,0)…）。布局仍用 shader-struct 镜像到 CPU 侧，
 ;; 步长与字段偏移全部由字段表给出，并在编译期按名字对齐（glsl-vertex-layout!），一个字节字面量都没有。
-(glsl-struct vertex (vec-3 pos) (vec-3 normal))
+(shader-struct vertex (vec-3 pos) (vec-3 normal))
 
 (define cube-verts
   (list
@@ -446,22 +447,22 @@
 (glsl-uniform-setter! program vert-src frag-src)
 
 (define (init)
-  (set! program (build-program (gl-vertex-shader vert-src)
-                               (gl-fragment-shader frag-src)))
+  (set! program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                              (gl-fragment-shader frag-src))))
 
   ;; 画立体的东西就得开深度测试（06 课）。
   (gl-enable gl-depth-test)
 
   ;; ---- VAO / VBO / EBO ----
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
 
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer cube-data gl-static-draw)
   (glsl-vertex-layout! vert-src vertex)
 
-  (define ebo (buffer-new))
+  (define ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -505,7 +506,8 @@
                #:init init
                #:draw draw
                ;; 窗口尺寸变化、viewport 重设之后被调用，参数是新的客户区宽高。
-               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
+               #:on-close release-all!))
 (send frame show #t)
 
 ;; 没有 timer：四个立方体是静姿态，没有东西在动，就不必每 16ms 请求一次重绘。
@@ -547,6 +549,7 @@
 (require racket/class
          racket/math                     ; degrees-&gt;radians
          "../lib/window.rkt"
+         "../lib/gpu.rkt"
          "../lib/matrix.rkt")            ; m-look-at / m-perspective / m-normal-matrix / …
 
 ;; ------------------------------------------------------------
@@ -609,9 +612,9 @@
           (set! frag-color (vec-4 (* (+ ambient diff spec) u-light-color u-object-color) 1.0))))
 
 ;; ------------------------------------------------------------
-;; 三、立方体几何：与 directional.rkt 逐行相同（含 glsl-struct 布局）
+;; 三、立方体几何：与 directional.rkt 逐行相同（含 shader-struct 布局）
 ;; ------------------------------------------------------------
-(glsl-struct vertex (vec-3 pos) (vec-3 normal))
+(shader-struct vertex (vec-3 pos) (vec-3 normal))
 
 (define cube-verts
   (list
@@ -694,22 +697,22 @@
 (glsl-uniform-setter! program vert-src frag-src)
 
 (define (init)
-  (set! program (build-program (gl-vertex-shader vert-src)
-                               (gl-fragment-shader frag-src)))
+  (set! program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                              (gl-fragment-shader frag-src))))
 
   ;; 画立体的东西就得开深度测试（06 课）。
   (gl-enable gl-depth-test)
 
   ;; ---- VAO / VBO / EBO ----
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
 
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer cube-data gl-static-draw)
   (glsl-vertex-layout! vert-src vertex)
 
-  (define ebo (buffer-new))
+  (define ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -752,7 +755,8 @@
                #:height win-h
                #:init init
                #:draw draw
-               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
+               #:on-close release-all!))
 (send frame show #t)
 
 ;; 没有 timer：灯和四个立方体都不动，画面上没有东西在变。
@@ -793,6 +797,7 @@
          racket/gui                      ; timer%
          racket/math                     ; degrees-&gt;radians / cos
          "../lib/window.rkt"
+         "../lib/gpu.rkt"
          "../lib/matrix.rkt")            ; m-look-at / m-perspective / m-normal-matrix / …
 
 ;; ------------------------------------------------------------
@@ -863,9 +868,9 @@
           (set! frag-color (vec-4 (* (+ ambient diff spec) u-light-color u-object-color) 1.0))))
 
 ;; ------------------------------------------------------------
-;; 三、立方体几何：与 point.rkt 逐行相同（含 glsl-struct 布局）
+;; 三、立方体几何：与 point.rkt 逐行相同（含 shader-struct 布局）
 ;; ------------------------------------------------------------
-(glsl-struct vertex (vec-3 pos) (vec-3 normal))
+(shader-struct vertex (vec-3 pos) (vec-3 normal))
 
 (define cube-verts
   (list
@@ -961,22 +966,22 @@
 (glsl-uniform-setter! program vert-src frag-src)
 
 (define (init)
-  (set! program (build-program (gl-vertex-shader vert-src)
-                               (gl-fragment-shader frag-src)))
+  (set! program (own! 'program (build-program (gl-vertex-shader vert-src)
+                                              (gl-fragment-shader frag-src))))
 
   ;; 画立体的东西就得开深度测试（06 课）。
   (gl-enable gl-depth-test)
 
   ;; ---- VAO / VBO / EBO ----
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
 
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer cube-data gl-static-draw)
   (glsl-vertex-layout! vert-src vertex)
 
-  (define ebo (buffer-new))
+  (define ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -1036,7 +1041,8 @@
                #:height win-h
                #:init init
                #:draw draw
-               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
+               #:on-close release-all!))
 (send frame show #t)
 
 ;; 相机在转，需要定时器不断请求重绘（同 07 课）。定时器只负责"每隔 16ms 请求重绘"，
@@ -1067,6 +1073,10 @@
         <li>聚光里把锥角改小：<code>inner-deg</code> / <code>outer-deg</code> 从 <code>12.5</code> / <code>17.5</code> 改成 <code>5.0</code> / <code>8.0</code>。光斑收窄成一小块，画面上只剩正中那个立方体亮着；反过来改成 <code>60.0</code> / <code>90.0</code>，画面就慢慢变成点光那节的样子——锥开到 180° 就是点光（11.4）。</li>
         <li>方向光里把 <code>light-dir</code> 从 <code>(vec-3 -0.2 -1.0 -0.3)</code> 改成 <code>(vec-3 0.0 -1.0 0.0)</code>（正午的太阳，光垂直往下）：四个立方体只剩顶面亮，前面和侧面一起暗下去，只剩一点环境光。同一个面亮不亮，全看它朝哪——这就是方向光里唯一的变量。</li>
       </ol>
+      <div class="note">
+        <p><b>GPU 资源</b>本节代码里每个 <code>*-new</code> / <code>build-program</code> 都用 <code>own!</code> 登记，关窗时 <code>release-all!</code> 统一删除。为什么这些句柄 GC 管不了，见 <a href="../02-hello-triangle/index.html#s2-9">02 · 2.9</a>。</p>
+      </div>
+
 
       <h2 id="s11-summary">小结</h2>
 

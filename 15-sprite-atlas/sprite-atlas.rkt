@@ -21,6 +21,7 @@
          racket/gui                     ; timer%
          racket/math                    ; degrees->radians / pi
          "../lib/window.rkt"
+         "../lib/gpu.rkt"
          "../lib/matrix.rkt"
          "../lib/obj.rkt"
          "../lib/sprite-sheet.rkt")
@@ -235,55 +236,55 @@
 (glsl-uniform-setter! sprite-program sprite-vert sprite-frag #:prefix "sprite-")
 
 (define (init)
-  (set! sky-program (build-program (gl-vertex-shader sky-vert)
-                                   (gl-fragment-shader sky-frag)))
-  (set! ground-program (build-program (gl-vertex-shader ground-vert)
-                                      (gl-fragment-shader ground-frag)))
-  (set! teapot-program (build-program (gl-vertex-shader teapot-vert)
-                                      (gl-fragment-shader teapot-frag)))
-  (set! sprite-program (build-program (gl-vertex-shader sprite-vert)
-                                      (gl-fragment-shader sprite-frag)))
+  (set! sky-program (own! 'program (build-program (gl-vertex-shader sky-vert)
+                                                  (gl-fragment-shader sky-frag))))
+  (set! ground-program (own! 'program (build-program (gl-vertex-shader ground-vert)
+                                                     (gl-fragment-shader ground-frag))))
+  (set! teapot-program (own! 'program (build-program (gl-vertex-shader teapot-vert)
+                                                     (gl-fragment-shader teapot-frag))))
+  (set! sprite-program (own! 'program (build-program (gl-vertex-shader sprite-vert)
+                                                     (gl-fragment-shader sprite-frag))))
 
   (gl-enable gl-depth-test)
 
   ;; 天空 VAO
-  (set! sky-vao (vertex-array-new))
+  (set! sky-vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array sky-vao)
-  (define sky-vbo (buffer-new))
+  (define sky-vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer sky-vbo)
   (buffer-upload gl-array-buffer sky-data gl-static-draw)
   (glsl-vertex-layout! sky-vert sky-vertex)
   (gl-bind-vertex-array 0)
 
   ;; 地面 VAO
-  (set! ground-vao (vertex-array-new))
+  (set! ground-vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array ground-vao)
-  (define ground-vbo (buffer-new))
+  (define ground-vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer ground-vbo)
   (buffer-upload gl-array-buffer ground-data gl-static-draw)
   (glsl-vertex-layout! ground-vert ground-vertex)
   (gl-bind-vertex-array 0)
 
   ;; 茶壶 VAO
-  (set! teapot-vao (vertex-array-new))
+  (set! teapot-vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array teapot-vao)
-  (define teapot-vbo (buffer-new))
+  (define teapot-vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer teapot-vbo)
   (buffer-upload gl-array-buffer teapot-data gl-static-draw)
   (glsl-vertex-layout! teapot-vert teapot-vertex)
-  (define teapot-ebo (buffer-new))
+  (define teapot-ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer teapot-ebo)
   (buffer-upload gl-element-array-buffer teapot-indices gl-static-draw)
   (gl-bind-vertex-array 0)
 
   ;; 精灵 VAO
-  (set! sprite-vao (vertex-array-new))
+  (set! sprite-vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array sprite-vao)
-  (define sprite-vbo (buffer-new))
+  (define sprite-vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer sprite-vbo)
   (buffer-upload gl-array-buffer sprite-quad gl-static-draw)
   (glsl-vertex-layout! sprite-vert sprite-vertex)
-  (define sprite-ebo (buffer-new))
+  (define sprite-ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer sprite-ebo)
   (buffer-upload gl-element-array-buffer sprite-indices gl-static-draw)
   (gl-bind-vertex-array 0)
@@ -418,7 +419,8 @@
                #:multisample 4
                #:init init
                #:draw draw
-               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
+               #:on-close release-all!))
 (send frame show #t)
 
 (define timer

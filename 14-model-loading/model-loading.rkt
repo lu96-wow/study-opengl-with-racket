@@ -29,6 +29,7 @@
          racket/gui                     ; timer%
          racket/math                    ; degrees->radians
          "../lib/window.rkt"
+         "../lib/gpu.rkt"
          "../lib/matrix.rkt"
          "../lib/obj.rkt")
 
@@ -103,22 +104,22 @@
 (glsl-uniform-setter! model-program model-vert model-frag #:prefix "model-")
 
 (define (init)
-  (set! model-program (build-program (gl-vertex-shader model-vert)
-                                     (gl-fragment-shader model-frag)))
+  (set! model-program (own! 'program (build-program (gl-vertex-shader model-vert)
+                                                    (gl-fragment-shader model-frag))))
 
   (gl-enable gl-depth-test)
 
   ;; ---- 模型 VAO / VBO / EBO ----
-  (set! vao (vertex-array-new))
+  (set! vao (own! 'vertex-array (vertex-array-new)))
   (gl-bind-vertex-array vao)
 
-  (define vbo (buffer-new))
+  (define vbo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer model-data gl-static-draw)
   ;; shader 的 in 名 = model-vertex 字段名：pos / normal / uv
   (glsl-vertex-layout! model-vert model-vertex)
 
-  (define ebo (buffer-new))
+  (define ebo (own! 'buffer (buffer-new)))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer model-indices gl-static-draw)
 
@@ -166,7 +167,8 @@
                #:height win-h
                #:init init
                #:draw draw
-               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))))
+               #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
+               #:on-close release-all!))
 (send frame show #t)
 
 ;; 模型在转，需要定时器不断请求重绘
