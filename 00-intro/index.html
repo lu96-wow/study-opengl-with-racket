@@ -270,7 +270,7 @@
       <ul>
         <li>顶点、纹理、索引尽量只上传一次，之后留在显存。</li>
         <li>每帧只传变化的小数据：矩阵、光源参数、少量 uniform。</li>
-        <li>避免 GPU → CPU 回读（`gl-read-pixels` / `gl-finish` 会等待 GPU，打断流水线）。</li>
+        <li>避免 GPU → CPU 回读（<code>gl-read-pixels</code> / <code>gl-finish</code> 会等待 GPU，打断流水线）。</li>
         <li>大量小 draw call 的 CPU 提交开销和状态切换也可能成为瓶颈，和显存带宽是两回事。</li>
       </ul>
 
@@ -300,7 +300,7 @@
 
       <p>GL 调用大多是“把命令放进队列”，CPU 不一定等 GPU 做完。只有回读、<code>gl-finish</code>、查询结果等操作才会强制同步。</p>
 
-      <p><b>谁负责释放</b>这张表里的名字只是句柄：<code>gl-gen-*</code> / <code>build-program</code> 分配的对象归调用方，用完要 <code>gl-delete-*</code>。它们的内存在驱动里，不在 Racket 堆上，GC 看不见也不会回收（为什么不能用终结器，见 <code>racket-shader-opengl</code> 的 DESIGN.md §3.1）。而 <code>vec-array</code> 这类 Racket 值不用你管——上传是复制，复制完那份内存就交给 GC 了。两者分界见 <a href="../02-hello-triangle/index.html#s2-9">02 · 2.9</a>。</p>
+      <p><b>谁负责释放</b>这张表里的名字只是句柄：<code>gl-gen-*</code> / <code>build-program</code> 分配的对象归调用方，用完要自己调 <code>gl-delete-*</code>。它们的内存在驱动里，不在 Racket 堆上，GC 看不见也不会回收（为什么不能用终结器，见 <code>racket-shader-opengl</code> 的 DESIGN.md §3.1）。而 <code>vec-array</code> 这类 Racket 值不用你管——上传是复制，复制完那份内存就交给 GC 了。所以从 02 起，每课都写一个 <code>shutdown</code>，关窗时把本课创建的句柄逐个删掉；分界与写法见 <a href="../02-hello-triangle/index.html#s2-9">02 · 2.9</a>。</p>
 
       <h3 id="s0-8-6">0.8.6 每个常用 GL 调用在 GPU 上做什么</h3>
 

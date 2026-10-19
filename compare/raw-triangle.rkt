@@ -97,7 +97,7 @@ void main() {
   (glDrawArrays GL_TRIANGLES 0 3)
   (glBindVertexArray 0))
 
-;; ---- 释放：raw 版自己写，和教程 lib/gpu.rkt 的 release-all! 等价 ----
+;; ---- 释放：raw 版自己写，和课程里各课的 shutdown 做的是同一件事 ----
 ;; 必须在 GL 上下文还活着的时候调（关窗时、exit 之前）。
 ;; glDelete* 是「标记待删」：驱动会等正在跑的 draw 用完再真正释放。
 (define (shutdown)

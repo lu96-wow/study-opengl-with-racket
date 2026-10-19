@@ -15,7 +15,6 @@
          racket/gui
          racket/math
          "../lib/window.rkt"
-         "../lib/gpu.rkt"
          "../lib/matrix.rkt")
 
 ;; ------------------------------------------------------------
@@ -139,16 +138,19 @@
         (vec-3  1.5  0.2  -1.5)
         (vec-3 -1.3  1.0  -1.5)))
 
-(define program #f)
-(define vao #f)
-(define texture #f)
+(define program 0)
+(define vao 0)
+(define texture 0)
 (define u-model-loc #f)
 (define u-view-loc #f)
 (define u-proj-loc #f)
+;; 这些缓冲句柄也放在顶层：关窗时 shutdown 要能拿到（0 = 还没创建）
+(define vbo 0)
+(define ebo 0)
 
 (define (init)
-  (set! program (own! 'program (build-program (gl-vertex-shader vert-src)
-                                              (gl-fragment-shader frag-src))))
+  (set! program (build-program (gl-vertex-shader vert-src)
+                               (gl-fragment-shader frag-src)))
 
   ;; ---- 深度缓冲 ----
   ;; 每个像素记住目前画到的最浅的深度；新片元比它更远就直接丢弃。
@@ -163,7 +165,7 @@
   (gl-cull-face gl-back)
 
   ;; ---- 纹理：创建对象、设参数、上传像素（同 04 课） ----
-  (set! texture (own! 'texture (texture-new)))
+  (set! texture (texture-new))
   (gl-bind-texture gl-texture-2d texture)
   (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-s gl-repeat)
   (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-t gl-repeat)
@@ -181,10 +183,10 @@
   (gl-bind-texture gl-texture-2d texture)
 
   ;; ---- VAO / VBO / EBO ----
-  (set! vao (own! 'vertex-array (vertex-array-new)))
+  (set! vao (vertex-array-new))
   (gl-bind-vertex-array vao)
 
-  (define vbo (own! 'buffer (buffer-new)))
+  (set! vbo (buffer-new))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer vertex-data gl-static-draw)
   ;; 步长和偏移都从布局算出来，不写字面量：vec-3 + vec-2 = 5 个 float = 20 字节，
@@ -196,7 +198,7 @@
   (gl-vertex-attrib-pointer 1 2 gl-float #f stride uv-offset)
   (gl-enable-vertex-attrib-array 1)
 
-  (define ebo (own! 'buffer (buffer-new)))
+  (set! ebo (buffer-new))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -235,6 +237,20 @@
     (gl-draw-elements gl-triangles 36 gl-unsigned-short 0))
   (gl-bind-vertex-array 0))
 
+;; ------------------------------------------------------------
+;; 关窗前释放：这些句柄归调用方，不删就一直占着显存
+;; ------------------------------------------------------------
+;; 顺序：先解绑当前状态，再删引用方（VAO）→ 缓冲 → 纹理 → program。
+;; 初始值是 0：0 不是有效对象，GL 的 delete 会忽略它（init 没跑完也能安全关窗）。
+(define (shutdown)
+  (gl-bind-vertex-array 0)      ; 别删正在用的
+  (gl-use-program 0)
+  (vertex-array-delete vao)
+  (buffer-delete vbo)
+  (buffer-delete ebo)
+  (texture-delete texture)
+  (program-delete program))
+
 (define-values (frame canvas)
   (make-window #:title "06 坐标系"
                #:width win-w
@@ -243,7 +259,7 @@
                #:draw draw
                ;; 窗口尺寸变化、viewport 重设之后被调用，参数是新的客户区宽高。
                #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
-               #:on-close release-all!))
+               #:on-close shutdown))
 (send frame show #t)
 
 ;; 立方体在转，需要定时器不断请求重绘。

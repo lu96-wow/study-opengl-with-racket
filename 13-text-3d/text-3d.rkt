@@ -22,7 +22,6 @@
          racket/gui                     ; timer%
          racket/math                    ; degrees->radians
          "../lib/window.rkt"
-         "../lib/gpu.rkt"
          "../lib/matrix.rkt"
          "../lib/text-texture.rkt")
 
@@ -125,10 +124,20 @@
 
 (struct label (tex center scale color) #:transparent)
 
-(define line-program #f)
-(define text-program #f)
-(define line-vao #f)
-(define text-vao #f)
+(define line-program 0)
+(define text-program 0)
+;; uniform 位置：链接后查一次（名字用 GLSL 里的写法），之后每帧直接 uniform-set!
+(define line-u-model-loc 0)
+(define line-u-view-loc 0)
+(define line-u-proj-loc 0)
+(define line-u-color-loc 0)
+(define text-u-model-loc 0)
+(define text-u-view-loc 0)
+(define text-u-proj-loc 0)
+(define text-u-color-loc 0)
+(define text-u-tex-loc 0)
+(define line-vao 0)
+(define text-vao 0)
 (define labels '())
 
 ;; 三个线框立方体：位置 + 颜色
@@ -137,25 +146,36 @@
         (list (vec-3  0.0 0.0 0.0) (vec-4 1.0 0.65 0.25 1.0))
         (list (vec-3  1.8 0.0 0.0) (vec-4 0.35 1.0 0.55 1.0))))
 
-;; uniform setter：从 shader 的编译期接口表生成，类型自动推
-(glsl-uniform-setter! line-program line-vert line-frag #:prefix "line-")
-(glsl-uniform-setter! text-program text-vert text-frag #:prefix "text-")
+;; uniform 位置：链接后查一次（line-* / text-* 两套，避免同名撞）
+;; 这些缓冲句柄也放在顶层：关窗时 shutdown 要能拿到（0 = 还没创建）
+(define line-vbo 0)
+(define text-vbo 0)
+(define text-ebo 0)
 
 ;; ------------------------------------------------------------
 ;; 四、初始化
 ;; ------------------------------------------------------------
 (define (init)
-  (set! line-program (own! 'program (build-program (gl-vertex-shader line-vert)
-                                                   (gl-fragment-shader line-frag))))
-  (set! text-program (own! 'program (build-program (gl-vertex-shader text-vert)
-                                                   (gl-fragment-shader text-frag))))
+  (set! line-program (build-program (gl-vertex-shader line-vert)
+                                    (gl-fragment-shader line-frag)))
+  (set! line-u-model-loc (uniform-location line-program "u_model"))
+  (set! line-u-view-loc (uniform-location line-program "u_view"))
+  (set! line-u-proj-loc (uniform-location line-program "u_proj"))
+  (set! line-u-color-loc (uniform-location line-program "u_color"))
+  (set! text-program (build-program (gl-vertex-shader text-vert)
+                                    (gl-fragment-shader text-frag)))
+  (set! text-u-model-loc (uniform-location text-program "u_model"))
+  (set! text-u-view-loc (uniform-location text-program "u_view"))
+  (set! text-u-proj-loc (uniform-location text-program "u_proj"))
+  (set! text-u-color-loc (uniform-location text-program "u_color"))
+  (set! text-u-tex-loc (uniform-location text-program "u_tex"))
 
   (gl-enable gl-depth-test)
 
   ;; ---- 线框立方体 VAO/VBO ----
-  (set! line-vao (own! 'vertex-array (vertex-array-new)))
+  (set! line-vao (vertex-array-new))
   (gl-bind-vertex-array line-vao)
-  (define line-vbo (own! 'buffer (buffer-new)))
+  (set! line-vbo (buffer-new))
   (gl-bind-buffer gl-array-buffer line-vbo)
   (buffer-upload gl-array-buffer line-data gl-static-draw)
   (gl-vertex-attrib-pointer 0 3 gl-float #f 0 0)
@@ -163,13 +183,17 @@
   (gl-bind-vertex-array 0)
 
   ;; ---- 文字 quad VAO/VBO/EBO ----
-  (set! text-vao (own! 'vertex-array (vertex-array-new)))
+  (set! text-vao (vertex-array-new))
   (gl-bind-vertex-array text-vao)
-  (define text-vbo (own! 'buffer (buffer-new)))
+  (set! text-vbo (buffer-new))
   (gl-bind-buffer gl-array-buffer text-vbo)
   (buffer-upload gl-array-buffer text-quad-data gl-static-draw)
-  (glsl-vertex-layout! text-vert text-quad)
-  (define text-ebo (own! 'buffer (buffer-new)))
+  ;; 顶点属性：手写 location / 分量 / 类型 / 步长 / 偏移（pos 0、uv 12）
+  (gl-vertex-attrib-pointer 0 3 gl-float #f (text-quad-stride-bytes) (text-quad-field-offset 'pos))
+  (gl-enable-vertex-attrib-array 0)
+  (gl-vertex-attrib-pointer 1 2 gl-float #f (text-quad-stride-bytes) (text-quad-field-offset 'uv))
+  (gl-enable-vertex-attrib-array 1)
+  (set! text-ebo (buffer-new))
   (gl-bind-buffer gl-element-array-buffer text-ebo)
   (buffer-upload gl-element-array-buffer text-quad-indices gl-static-draw)
   (gl-bind-vertex-array 0)
@@ -219,10 +243,10 @@
   (for ([cube (in-list cubes)])
     (define pos (car cube))
     (define color (cadr cube))
-    (set-line-u-model! (m-translate pos))
-    (set-line-u-view! view)
-    (set-line-u-proj! proj)
-    (set-line-u-color! color)
+    (uniform-set! line-u-model-loc 'mat-4 (m-translate pos))
+    (uniform-set! line-u-view-loc 'mat-4 view)
+    (uniform-set! line-u-proj-loc 'mat-4 proj)
+    (uniform-set! line-u-color-loc 'vec-4 color)
     (gl-draw-arrays gl-lines 0 line-vertex-count))
 
   ;; ---- 文字：透明，放在不透明/线框之后画 ----
@@ -233,9 +257,9 @@
   (program-use text-program)
   (gl-bind-vertex-array text-vao)
   (gl-active-texture gl-texture0)
-  (set-text-u-view! view)
-  (set-text-u-proj! proj)
-  (set-text-u-tex! 0)
+  (uniform-set! text-u-view-loc 'mat-4 view)
+  (uniform-set! text-u-proj-loc 'mat-4 proj)
+  (uniform-set! text-u-tex-loc 'sampler-2d 0)
 
   (for ([l (in-list labels)])
     (define tex (label-tex l))
@@ -247,14 +271,33 @@
              (vec-4 (* (vx up) scale) (* (vy up) scale) (* (vz up) scale) 0.0)
              (vec-4 (vx normal) (vy normal) (vz normal) 0.0)
              (vec-4 (vx (label-center l)) (vy (label-center l)) (vz (label-center l)) 1.0)))
-    (set-text-u-model! model)
-    (set-text-u-color! (label-color l))
+    (uniform-set! text-u-model-loc 'mat-4 model)
+    (uniform-set! text-u-color-loc 'vec-4 (label-color l))
     (gl-bind-texture gl-texture-2d (text-texture-id tex))
     (gl-draw-elements gl-triangles 6 gl-unsigned-short 0))
 
   (gl-depth-mask #t)
   (gl-disable gl-blend)
   (gl-bind-vertex-array 0))
+
+;; ------------------------------------------------------------
+;; 关窗前释放：这些句柄归调用方，不删就一直占着显存
+;; ------------------------------------------------------------
+;; 顺序：先解绑当前状态，再删引用方（VAO）→ 缓冲 → 纹理 → program。
+;; 初始值是 0：0 不是有效对象，GL 的 delete 会忽略它（init 没跑完也能安全关窗）。
+(define (shutdown)
+  (gl-bind-vertex-array 0)      ; 别删正在用的
+  (gl-use-program 0)
+  (vertex-array-delete line-vao)
+  (vertex-array-delete text-vao)
+  (buffer-delete line-vbo)
+  (buffer-delete text-vbo)
+  (buffer-delete text-ebo)
+  ;; 文字纹理是 init 里用 make-text-texture 建的三张，逐个删
+  (for ([l (in-list labels)])
+    (delete-text-texture (label-tex l)))
+  (program-delete line-program)
+  (program-delete text-program))
 
 (define-values (frame canvas)
   (make-window #:title "13 3D 文字"
@@ -263,7 +306,7 @@
                #:init init
                #:draw draw
                #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
-               #:on-close release-all!))
+               #:on-close shutdown))
 (send frame show #t)
 
 ;; 相机在动，需要定时器不断请求重绘

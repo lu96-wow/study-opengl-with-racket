@@ -9,8 +9,7 @@
 
 (require racket/class
          racket/gui
-         "../lib/window.rkt"
-         "../lib/gpu.rkt")
+         "../lib/window.rkt")
 
 ;; 顶点着色器。
 ;; GLSL 的类型：float/int/bool 是标量，vec-2/vec-3/vec-4 是向量（浮点字面量要写 1.0）。
@@ -48,17 +47,19 @@
                (vec-2  0.6 -0.5) (vec-3 0.0 1.0 0.0)    ; 绿
                (vec-2  0.0  0.6) (vec-3 0.0 0.0 1.0)))  ; 蓝
 
-(define program #f)
-(define vao #f)
+(define program 0)
+(define vao 0)
 (define u-time-loc #f)
+;; 这些缓冲句柄也放在顶层：关窗时 shutdown 要能拿到（0 = 还没创建）
+(define vbo 0)
 
 (define (init)
-  (set! program (own! 'program (build-program (gl-vertex-shader vert-src)
-                                              (gl-fragment-shader frag-src))))
+  (set! program (build-program (gl-vertex-shader vert-src)
+                               (gl-fragment-shader frag-src)))
 
-  (set! vao (own! 'vertex-array (vertex-array-new)))
+  (set! vao (vertex-array-new))
   (gl-bind-vertex-array vao)
-  (define vbo (own! 'buffer (buffer-new)))
+  (set! vbo (buffer-new))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer vertex-data gl-static-draw)
 
@@ -92,11 +93,23 @@
   (gl-draw-arrays gl-triangles 0 3)
   (gl-bind-vertex-array 0))
 
+;; ------------------------------------------------------------
+;; 关窗前释放：这些句柄归调用方，不删就一直占着显存
+;; ------------------------------------------------------------
+;; 顺序：先解绑当前状态，再删引用方（VAO）→ 缓冲 → 纹理 → program。
+;; 初始值是 0：0 不是有效对象，GL 的 delete 会忽略它（init 没跑完也能安全关窗）。
+(define (shutdown)
+  (gl-bind-vertex-array 0)      ; 别删正在用的
+  (gl-use-program 0)
+  (vertex-array-delete vao)
+  (buffer-delete vbo)
+  (program-delete program))
+
 (define-values (frame canvas)
   (make-window #:title "03 着色器"
                #:init init
                #:draw draw
-               #:on-close release-all!))
+               #:on-close shutdown))
 (send frame show #t)
 
 ;; uniform 每帧在变，需要定时器不断请求重绘

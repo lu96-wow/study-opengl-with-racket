@@ -13,8 +13,7 @@
 ;; 本文件为了聚焦概念，使用 racket-shader-opengl 的便利层（build-program / buffer-new …）。
 
 (require racket/class
-         "../lib/window.rkt"
-         "../lib/gpu.rkt")
+         "../lib/window.rkt")
 
 ;; 三个顶点。一个顶点至少要有位置；vec-3 = 三个 float = (x y z)。
 ;; 坐标是标准坐标（-1..1，中心 0）。vec-array 把三个顶点打包成一条连续缓冲。
@@ -38,23 +37,25 @@
         (define (main) void
           (set! frag-color (vec-4 1.0 0.5 0.2 1.0)))))  ; 橙色
 
-(define program #f)   ; 编译链接好的着色器程序
-(define vao #f)       ; "说明书"：记录顶点数据怎么读
+(define program 0)   ; 编译链接好的着色器程序
+(define vao 0)       ; "说明书"：记录顶点数据怎么读
+;; 这些缓冲句柄也放在顶层：关窗时 shutdown 要能拿到（0 = 还没创建）
+(define vbo 0)
 
 ;; init 只跑一次（窗口第一次绘制、GL 上下文就绪后）。
 (define (init)
 
   ;; ① 编译两段着色器并链接成一个 program。
   ;;    racket-shader 的工具：自动查编译/链接状态，失败时给出报错行。
-  (set! program (own! 'program (build-program (gl-vertex-shader vert-src)
-                                              (gl-fragment-shader frag-src))))
+  (set! program (build-program (gl-vertex-shader vert-src)
+                               (gl-fragment-shader frag-src)))
 
   ;; ② 把顶点数据搬进显存。
   ;;    这一步只依赖 gl-array-buffer 这个绑定，和 VAO 无关（VAO 没绑也能上传）。
   ;;    gl-gen-buffers(n)：生成 n 个缓冲，返回装 id 的向量；
   ;;    裸写法： (u32vector-ref (gl-gen-buffers 1) 0)
   ;;    buffer-new：取单个缓冲 id（= glGenBuffers(1) 的便利封装）。
-  (define vbo (own! 'buffer (buffer-new)))
+  (set! vbo (buffer-new))
   ;; gl-bind-buffer(目标, id)：把这块缓冲绑到“顶点数据”目标上。
   ;;   gl-array-buffer 是 OpenGL 内置常量（C 里叫 GL_ARRAY_BUFFER），表示顶点数据用途。
   ;;   其他缓冲目标（UBO/SSBO/像素缓冲…）和用法常量见教程 2.2 的表。
@@ -70,7 +71,7 @@
 
   ;; ③ 建 VAO 并绑定，然后描述“怎么读”。这两步才依赖 VAO。
   ;;    VAO = 顶点数组对象，是“数据说明书”，记下每个属性槽怎么从缓冲里读。
-  (set! vao (own! 'vertex-array (vertex-array-new)))
+  (set! vao (vertex-array-new))
   (gl-bind-vertex-array vao)
   ;; gl-vertex-attrib-pointer(槽号, 分量数, 类型, 归一化, 步长, 偏移)
   ;;   = 0 号槽 / 每顶点 3 个分量 / 类型 float / 不归一化 / 紧密排列(0) / 从 0 开始
@@ -97,11 +98,23 @@
   (gl-draw-arrays gl-triangles 0 3) ; 第 0 个顶点起画 3 个，每 3 个一组三角形
   (gl-bind-vertex-array 0))
 
+;; ------------------------------------------------------------
+;; 关窗前释放：这些句柄归调用方，不删就一直占着显存
+;; ------------------------------------------------------------
+;; 顺序：先解绑当前状态，再删引用方（VAO）→ 缓冲 → 纹理 → program。
+;; 初始值是 0：0 不是有效对象，GL 的 delete 会忽略它（init 没跑完也能安全关窗）。
+(define (shutdown)
+  (gl-bind-vertex-array 0)      ; 别删正在用的
+  (gl-use-program 0)
+  (vertex-array-delete vao)
+  (buffer-delete vbo)
+  (program-delete program))
+
 (define-values (frame canvas)
   (make-window #:title "02 第一个三角形"
                #:init init
                #:draw draw
-               #:on-close release-all!))
+               #:on-close shutdown))
 (send frame show #t)
 
 ;; 复盘：VBO 存数据，VAO 记"怎么读"，program 是 GPU 上的程序，draw 用它们画图。

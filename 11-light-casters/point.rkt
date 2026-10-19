@@ -20,7 +20,6 @@
 (require racket/class
          racket/math                     ; degrees->radians
          "../lib/window.rkt"
-         "../lib/gpu.rkt"
          "../lib/matrix.rkt")            ; m-look-at / m-perspective / m-normal-matrix / …
 
 ;; ------------------------------------------------------------
@@ -162,28 +161,56 @@
 (define eye-pos (vec-3 5.0 3.0 4.0))
 (define look-at-pos (vec-3 0.0 0.0 -2.0))
 
-(define program #f)
-(define vao #f)
-
-(glsl-uniform-setter! program vert-src frag-src)
+(define program 0)
+;; uniform 位置：链接后查一次（名字用 GLSL 里的写法），之后每帧直接 uniform-set!
+(define u-model-loc 0)
+(define u-view-loc 0)
+(define u-proj-loc 0)
+(define u-normal-matrix-loc 0)
+(define u-light-pos-loc 0)
+(define u-kc-loc 0)
+(define u-kl-loc 0)
+(define u-kq-loc 0)
+(define u-light-color-loc 0)
+(define u-view-pos-loc 0)
+(define u-object-color-loc 0)
+(define vao 0)
+;; 这些缓冲句柄也放在顶层：关窗时 shutdown 要能拿到（0 = 还没创建）
+(define vbo 0)
+(define ebo 0)
 
 (define (init)
-  (set! program (own! 'program (build-program (gl-vertex-shader vert-src)
-                                              (gl-fragment-shader frag-src))))
+  (set! program (build-program (gl-vertex-shader vert-src)
+                               (gl-fragment-shader frag-src)))
+  (set! u-model-loc (uniform-location program "u_model"))
+  (set! u-view-loc (uniform-location program "u_view"))
+  (set! u-proj-loc (uniform-location program "u_proj"))
+  (set! u-normal-matrix-loc (uniform-location program "u_normal_matrix"))
+  (set! u-light-pos-loc (uniform-location program "u_light_pos"))
+  (set! u-kc-loc (uniform-location program "u_kc"))
+  (set! u-kl-loc (uniform-location program "u_kl"))
+  (set! u-kq-loc (uniform-location program "u_kq"))
+  (set! u-light-color-loc (uniform-location program "u_light_color"))
+  (set! u-view-pos-loc (uniform-location program "u_view_pos"))
+  (set! u-object-color-loc (uniform-location program "u_object_color"))
 
   ;; 画立体的东西就得开深度测试（06 课）。
   (gl-enable gl-depth-test)
 
   ;; ---- VAO / VBO / EBO ----
-  (set! vao (own! 'vertex-array (vertex-array-new)))
+  (set! vao (vertex-array-new))
   (gl-bind-vertex-array vao)
 
-  (define vbo (own! 'buffer (buffer-new)))
+  (set! vbo (buffer-new))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer cube-data gl-static-draw)
-  (glsl-vertex-layout! vert-src vertex)
+  ;; 顶点属性：手写 location / 分量 / 类型 / 步长 / 偏移（pos 0、normal 12）
+  (gl-vertex-attrib-pointer 0 3 gl-float #f (vertex-stride-bytes) (vertex-field-offset 'pos))
+  (gl-enable-vertex-attrib-array 0)
+  (gl-vertex-attrib-pointer 1 3 gl-float #f (vertex-stride-bytes) (vertex-field-offset 'normal))
+  (gl-enable-vertex-attrib-array 1)
 
-  (define ebo (own! 'buffer (buffer-new)))
+  (set! ebo (buffer-new))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -202,23 +229,36 @@
   (program-use program)
 
   ;; 灯的位置与三个系数整帧只上传一次：它们不随立方体变。
-  (set-u-view! view)
-  (set-u-proj! proj)
-  (set-u-light-pos! light-pos)
-  (set-u-kc! k-constant)
-  (set-u-kl! k-linear)
-  (set-u-kq! k-quadratic)
-  (set-u-light-color! light-color)
-  (set-u-view-pos! eye-pos)
-  (set-u-object-color! object-color)
+  (uniform-set! u-view-loc 'mat-4 view)
+  (uniform-set! u-proj-loc 'mat-4 proj)
+  (uniform-set! u-light-pos-loc 'vec-3 light-pos)
+  (uniform-set! u-kc-loc 'float k-constant)
+  (uniform-set! u-kl-loc 'float k-linear)
+  (uniform-set! u-kq-loc 'float k-quadratic)
+  (uniform-set! u-light-color-loc 'vec-3 light-color)
+  (uniform-set! u-view-pos-loc 'vec-3 eye-pos)
+  (uniform-set! u-object-color-loc 'vec-3 object-color)
 
   (for ([pos (in-list cube-positions)])
     (define model (m-translate pos))
-    (set-u-model! model)
-    (set-u-normal-matrix! (m-normal-matrix model))
+    (uniform-set! u-model-loc 'mat-4 model)
+    (uniform-set! u-normal-matrix-loc 'mat-3 (m-normal-matrix model))
     (gl-draw-elements gl-triangles 36 gl-unsigned-short 0))
 
   (gl-bind-vertex-array 0))
+
+;; ------------------------------------------------------------
+;; 关窗前释放：这些句柄归调用方，不删就一直占着显存
+;; ------------------------------------------------------------
+;; 顺序：先解绑当前状态，再删引用方（VAO）→ 缓冲 → 纹理 → program。
+;; 初始值是 0：0 不是有效对象，GL 的 delete 会忽略它（init 没跑完也能安全关窗）。
+(define (shutdown)
+  (gl-bind-vertex-array 0)      ; 别删正在用的
+  (gl-use-program 0)
+  (vertex-array-delete vao)
+  (buffer-delete vbo)
+  (buffer-delete ebo)
+  (program-delete program))
 
 (define-values (frame canvas)
   (make-window #:title "11 点光"
@@ -227,7 +267,7 @@
                #:init init
                #:draw draw
                #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
-               #:on-close release-all!))
+               #:on-close shutdown))
 (send frame show #t)
 
 ;; 没有 timer：灯和四个立方体都不动，画面上没有东西在变。

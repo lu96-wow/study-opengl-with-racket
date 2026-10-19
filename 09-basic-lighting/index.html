@@ -20,7 +20,7 @@
 
       <h1>基础光照</h1>
 
-      <p class="goal">本节目标：在 08 课「物体色 × 光色」那条乘法上补进「方向」——逐片元算 ambient（环境光）、diffuse（漫反射）、specular（镜面高光）三项。为此第一次给顶点加一条法线属性，第一次用「法线矩阵」把法线正确地搬进世界空间，也第一次用 <code>glsl-struct</code> 描述顶点布局。跑起来应该看到一个橙色立方体：正面被照亮、中央有一块圆形高光，左侧和底面只剩一点环境光、明显比背景还暗——三项光照同时在场。</p>
+      <p class="goal">本节目标：在 08 课「物体色 × 光色」那条乘法上补进「方向」——逐片元算 ambient（环境光）、diffuse（漫反射）、specular（镜面高光）三项。为此第一次给顶点加一条法线属性，第一次用「法线矩阵」把法线正确地搬进世界空间，也第一次用 <code>shader-struct</code> 描述顶点布局。跑起来应该看到一个橙色立方体：正面被照亮、中央有一块圆形高光，左侧和底面只剩一点环境光、明显比背景还暗——三项光照同时在场。</p>
 
       <div class="run"><span class="prompt">$</span> racket 09-basic-lighting/basic-lighting.rkt</div>
 
@@ -317,13 +317,13 @@
           (e 2 0) (e 2 1) (e 2 2)))))</code></pre>
       </div>
 
-      <p>算出来是个 <code>mat-3</code>，用生成的 <code>(set-obj-u-normal-matrix! (m-normal-matrix model))</code> 上传；它内部选 <code>gl-uniform-matrix-3fv</code>，并把转置参数固定成 <code>#f</code>——和 4×4 矩阵同一个理由：本教程的矩阵一律列主序，正好是 GL 期望的排布，再让 GL 转一次反而会转错。顶点着色器里就是一行乘法：</p>
+      <p>算出来是个 <code>mat-3</code>，用 <code>(uniform-set! obj-u-normal-matrix-loc 'mat-3 (m-normal-matrix model))</code> 上传；<code>uniform-set!</code> 按类型符号选 <code>gl-uniform-matrix-3fv</code>，并把转置参数固定成 <code>#f</code>——和 4×4 矩阵同一个理由：本教程的矩阵一律列主序，正好是 GL 期望的排布，再让 GL 转一次反而会转错。顶点着色器里就是一行乘法：</p>
 
       <div class="code">
         <div class="code-title">09-basic-lighting/basic-lighting.rkt：上传法线矩阵（draw 里）<a class="srclink" href="../code.html?f=09-basic-lighting/basic-lighting.rkt">源码 ↗</a></div>
-        <pre><code class="lang-racket">  ;; 法线矩阵是 mat-3，setter 内部自动选 matrix-3fv 且 transpose 固定 #f：
+        <pre><code class="lang-racket">  ;; 法线矩阵是 mat-3，uniform-set! 按类型符号选 matrix-3fv，transpose 固定 #f：
   ;; lib/matrix.rkt 的矩阵都是列主序，正好是 GL 要的，传 #t 会让它转错。
-  (set-obj-u-normal-matrix! (m-normal-matrix model))</code></pre>
+  (uniform-set! obj-u-normal-matrix-loc 'mat-3 (m-normal-matrix model))</code></pre>
       </div>
 
       <div class="code">
@@ -341,7 +341,7 @@
         <p><b>关键点</b>model 只含<b>旋转 + 等比缩放</b>时，「逆转置」退化成 <code>mat-3(model)</code>：旋转的逆就是它的转置，等比缩放只是个正数因子、不改方向。所以本课默认画面看不出两者的差别——差别发生在你给 model 加上非等比缩放的那一刻：<code>(m-scale (vec-3 1.5 1.0 1.0))</code> 时，正面那块高光从 0.41 掉到 0.15；把 1.5 换成 4.0，高光干脆消失（0.47 → 0.00）。试试看第 ④ 条就是干这个的。</p>
       </div>
 
-      <h2 id="s9-3">9.3 在片元里算 + 布局用 glsl-struct</h2>
+      <h2 id="s9-3">9.3 在片元里算 + 布局用 shader-struct</h2>
 
       <p>三项都在<b>片元</b>着色器里算，不在顶点着色器里算。原因是法线从顶点传到片元时会被插值：立方体每个面的 4 个顶点法线相同，插值完整个面还是同一个法线，于是得到一个平整的面；换成曲面（球、地形）时相邻顶点的法线不同，插值后每个像素拿到一条略微不同的法线，高光才会顺着表面平滑铺开。要是改在顶点里算好颜色再插值，高光会被「摊」在三角形顶点之间，看到的是面与面之间的硬边，而不是一整片高光。所以顶点着色器本课只管两件事：把位置算进 <code>gl-position</code>、把法线和世界坐标传给片元。</p>
 
@@ -362,11 +362,11 @@
           (set! frag-color (vec-4 (* (+ ambient diff spec) u-light-color u-object-color) 1.0)))))</code></pre>
       </div>
 
-      <p>再看顶点怎么摆。一个顶点现在要带 6 个数：位置 3 个 + 法线 3 个。03/04 课已经消掉了字节字面量（<code>shader-stride-bytes</code> / <code>shader-byte-size</code> 按类型名算步长与偏移）；本课再往前一步，让 CPU 侧直接<b>镜像 shader 的顶点结构</b>——<code>glsl-struct</code> 声明一张字段表，步长和每个字段的偏移就都跟着字段名走：</p>
+      <p>再看顶点怎么摆。一个顶点现在要带 6 个数：位置 3 个 + 法线 3 个。03/04 课已经消掉了字节字面量（<code>shader-stride-bytes</code> / <code>shader-byte-size</code> 按类型名算步长与偏移）；本课再往前一步，让 CPU 侧直接<b>镜像 shader 的顶点结构</b>——<code>shader-struct</code> 声明一张字段表，步长和每个字段的偏移就都跟着字段名走：</p>
 
       <div class="code">
         <div class="code-title">09-basic-lighting/basic-lighting.rkt：把顶点结构镜像到 CPU 侧<a class="srclink" href="../code.html?f=09-basic-lighting/basic-lighting.rkt">源码 ↗</a></div>
-        <pre><code class="lang-racket">(glsl-struct vertex (vec-3 pos) (vec-3 normal))</code></pre>
+        <pre><code class="lang-racket">(shader-struct vertex (vec-3 pos) (vec-3 normal))</code></pre>
       </div>
 
       <p>于是 24 个顶点就是 24 个 <code>vertex</code> 记录：每个记录既是一对「位置 + 法线」的值，也能铺平成一条连续的 float 缓冲喂给 VBO。绑定属性时不再数字节，直接问字段名：</p>
@@ -377,11 +377,15 @@
       </div>
 
       <div class="code">
-        <div class="code-title">09-basic-lighting/basic-lighting.rkt：布局按名字自动对齐<a class="srclink" href="../code.html?f=09-basic-lighting/basic-lighting.rkt">源码 ↗</a></div>
-        <pre><code class="lang-racket">  (glsl-vertex-layout! vert-src vertex)</code></pre>
+        <div class="code-title">09-basic-lighting/basic-lighting.rkt：手写属性布局<a class="srclink" href="../code.html?f=09-basic-lighting/basic-lighting.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">  ;; location / 分量 / 类型手写；步长与偏移来自字段表
+  (gl-vertex-attrib-pointer 0 3 gl-float #f (vertex-stride-bytes) (vertex-field-offset 'pos))
+  (gl-enable-vertex-attrib-array 0)
+  (gl-vertex-attrib-pointer 1 3 gl-float #f (vertex-stride-bytes) (vertex-field-offset 'normal))
+  (gl-enable-vertex-attrib-array 1)</code></pre>
       </div>
 
-      <p>图 9-3 是这条缓冲在内存里的样子：每 6 个 float（24 字节）是一个顶点，前 3 个是位置、后 3 个是法线。GPU 每 24 字节取下一个顶点；读法线时从每个顶点的第 12 字节开始，读 3 个 float。这两个数现在一个都不用自己写——它们由字段表算出来。</p>
+      <p>图 9-3 是这条缓冲在内存里的样子：每 6 个 float（24 字节）是一个顶点，前 3 个是位置、后 3 个是法线。GPU 每 24 字节取下一个顶点；读法线时从每个顶点的第 12 字节开始，读 3 个 float。这两个数不用手写——<code>(vertex-stride-bytes)</code> 和 <code>(vertex-field-offset 'normal)</code> 从字段表算出来。</p>
 
       <figure class="figure">
         <svg viewBox="0 0 720 230" role="img" xmlns="http://www.w3.org/2000/svg">
@@ -392,7 +396,7 @@
             </marker>
           </defs>
 
-          <text x="60" y="24" font-size="13" fill="var(--accent)">布局由 glsl-vertex-layout! 按名字自动对齐</text>
+          <text x="60" y="24" font-size="13" fill="var(--accent)">步长 24 / 偏移 0 与 12 来自 shader-struct 字段表</text>
 
           <text x="120" y="60" font-size="12" fill="var(--muted)">0</text>
           <text x="186" y="60" font-size="12" fill="var(--muted)">4</text>
@@ -432,58 +436,40 @@
         <figcaption class="figcaption">图 9-3 一个顶点 24 字节：位置在前 12 字节，法线在后 12 字节</figcaption>
       </figure>
 
-      <h2 id="s9-4">9.4 三个便捷原语与它们的裸写法</h2>
+      <h2 id="s9-4">9.4 属性布局与 uniform 位置：手写版</h2>
 
-      <p>本课开始用到三个「编译期便捷原语」。它们不改变 OpenGL 的设计，只是把下面这些手写样板自动化；<b>第一次出现时先看清它们的裸等价</b>。</p>
-
-      <p>先看「不用宏」时，CPU 侧要手写多少东西（假设只有一个立方体、一个 program）：</p>
+      <p>属性布局、uniform 位置都在代码里明写，每一行都能对应到 GLSL 声明：</p>
 
       <div class="code">
-        <div class="code-title">裸写法：属性布局 + uniform 位置 + 上传</div>
-        <pre><code class="lang-racket">;; 每个属性都要手写 slot / 分量数 / 类型 / stride / offset
-(gl-vertex-attrib-pointer 0 3 gl-float #f (vertex-stride) (vertex-field-offset 'pos))
+        <div class="code-title">属性布局：location / 分量 / 类型手写，步长与偏移来自字段表</div>
+        <pre><code class="lang-racket">(gl-vertex-attrib-pointer 0 3 gl-float #f (vertex-stride-bytes) (vertex-field-offset 'pos))
 (gl-enable-vertex-attrib-array 0)
-(gl-vertex-attrib-pointer 1 3 gl-float #f (vertex-stride) (vertex-field-offset 'normal))
-(gl-enable-vertex-attrib-array 1)
-
-;; 每个 uniform 都要手查位置、手写类型
-(define obj-u-model (uniform-location object-program "u_model"))
-(define obj-u-view (uniform-location object-program "u_view"))
-(define obj-u-proj (uniform-location object-program "u_proj"))
-(define obj-u-normal-matrix (uniform-location object-program "u_normal_matrix"))
-(define obj-u-light-pos (uniform-location object-program "u_light_pos"))
-(define obj-u-light-color (uniform-location object-program "u_light_color"))
-(define obj-u-view-pos (uniform-location object-program "u_view_pos"))
-(define obj-u-object-color (uniform-location object-program "u_object_color"))
-
-;; draw 里逐个上传
-(uniform-set! obj-u-model 'mat-4 model)
-(uniform-set! obj-u-normal-matrix 'mat-3 (m-normal-matrix model))
-(uniform-set! obj-u-light-pos 'vec-3 light-pos)
-;; ...</code></pre>
+(gl-vertex-attrib-pointer 1 3 gl-float #f (vertex-stride-bytes) (vertex-field-offset 'normal))
+(gl-enable-vertex-attrib-array 1)</code></pre>
       </div>
 
-      <p>本课的宏写法把它压成两行，但生成的东西就是上面这些：</p>
+      <p>前三个参数必须和 GLSL 对上：<code>0</code> / <code>1</code> 是 shader 里 <code>layout(location N)</code> 的 N；<code>3</code> 是 <code>vec3</code> 的分量数；<code>gl-float</code> 是分量类型。后两个数不用手算——<code>shader-struct</code> 的字段表给出步长（24 字节）和每个字段的偏移（pos 0、normal 12）。</p>
 
       <div class="code">
-        <div class="code-title">宏写法：编译期按接口表生成</div>
-        <pre><code class="lang-racket">(glsl-vertex-layout! vert-src vertex)
-(glsl-uniform-setter! object-program vert-src frag-src #:prefix "obj-")</code></pre>
-      </div>
+        <div class="code-title">uniform 位置：链接后查一次，draw 里直接传值</div>
+        <pre><code class="lang-racket">;; init 里，build-program 之后
+(set! obj-u-model-loc (uniform-location object-program "u_model"))
+(set! obj-u-view-loc  (uniform-location object-program "u_view"))
+;; ...
 
-      <p>三个便捷原语的裸等价分别是：</p>
+;; draw 里
+(uniform-set! obj-u-model-loc 'mat-4 model)
+(uniform-set! obj-u-normal-matrix-loc 'mat-3 (m-normal-matrix model))</code></pre>
+      </div>
 
       <ul>
-        <li><code>(glsl-shader name form …)</code>：和 <code>(glsl …)</code> 一样产出 shader，额外把编译期接口表绑成 <code>name-interface</code>。<br>
-            裸等价：<code>(define name (glsl …))</code>——但接口只能在运行期用 <code>(glsl-program-interface name)</code> 取，宏用不了。</li>
-        <li><code>(glsl-vertex-layout! vert-src vertex)</code>：按名字（字段名 = shader <code>in</code> 名）生成属性布局。<br>
-            裸写法：<code>(gl-vertex-attrib-pointer 0 3 gl-float #f (vertex-stride) (vertex-field-offset 'pos))</code> 加 <code>(gl-enable-vertex-attrib-array 0)</code>，每个属性一组。</li>
-        <li><code>(glsl-uniform-setter! prog vert-src frag-src #:prefix "obj-")</code>：从接口表按名字生成 <code>set-obj-u-model!</code> 等。<br>
-            裸写法：<code>(define obj-u-model (uniform-location prog "u_model"))</code> 加 <code>(uniform-set! obj-u-model 'mat-4 model)</code>。</li>
+        <li><code>uniform-location</code> 用的是 <b>GLSL 里的写法</b>（<code>u_model</code>），不是 Racket 侧的连字符名。</li>
+        <li><code>uniform-set!</code> 的类型符号要跟 shader 声明一致（<code>'mat-4</code> / <code>'vec-3</code> / <code>'sampler-2d</code>），它据此选 <code>gl-uniform-*</code>。</li>
+        <li>位置查一次存起来：每帧只做 <code>gl-uniform-*</code>，不再查驱动。</li>
       </ul>
 
       <div class="note key">
-        <p><b>顺序原则</b>02 已经先把 raw OpenGL 的编译/缓冲/VAO 流程走过一遍，03–08 再改用便利层把样板收起来；本课新出现的「属性布局」和「uniform setter」也照这个顺序：先看上面的裸写法，再用宏。便捷原语只负责「少写、防错」，不取代基础：裸写法随时可用，名字/类型错在编译期就报，而不是运行期静默失效。</p>
+        <p><b>为什么这样分</b><code>location</code> 和分量数写出来能直接对照 GLSL；步长/偏移容易算错，所以交给 <code>shader-struct</code> 的字段表。两边一旦不一致 OpenGL 不会报错，所以注释里把「0 = pos，1 = normal」写清楚，改布局时一起改。</p>
       </div>
 
       <h2 id="s9-code">完整代码</h2>
@@ -514,7 +500,6 @@
 (require racket/class
          racket/math                     ; degrees-&gt;radians
          "../lib/window.rkt"
-         "../lib/gpu.rkt"
          "../lib/matrix.rkt")            ; m-look-at / m-perspective / m-normal-matrix / …
 
 ;; ------------------------------------------------------------
@@ -534,8 +519,8 @@
 ;; 光照明亮程度必须逐片元算，这两个量就是它要的输入。
 ;;
 ;; (glsl-shader name form ...) 与 (glsl ...) 一样产出 shader，并额外把编译期接口表
-;; 绑为 name-interface。裸等价： (define name (glsl ...))——但那样接口只能运行期用
-;; (shader-program-interface name) 取，宏（vertex-layout / uniform-setter）用不了。
+;; 绑为 name-interface（当前没有宏消费它，留着以后用）。裸等价： (define name (glsl ...))，
+;; 接口只能在运行期用 (shader-program-interface name) 取。
 (glsl-shader vert-src
   (version 330 core)
   (layout (location 0) in vec-3 pos)       ; 属性名 = CPU 侧 shader-struct 字段名
@@ -605,10 +590,10 @@
 ;; 三项光照全靠它。同一个空间角落在不同的面上法线不同（前面 (0,0,1)、右面 (1,0,0)…），
 ;; 所以还是 24 个顶点、每个面 4 个。
 ;;
-;; 布局不再手写：shader-struct 把 shader 的 struct 镜像到 CPU 侧——字段名、类型、顺序
-;; 和 shader 里一致，步长和偏移就自动有了。03/04 课的 shader-stride-bytes /
-;; shader-byte-size 已经消灭了字节字面量，这一步再进一步：偏移不再按"第几个字段"数，
-;; 而是按名字自动对齐（见下面 init 里的 glsl-vertex-layout!）。
+;; shader-struct 把 shader 的 struct 镜像到 CPU 侧：字段名、类型、顺序和 shader 里一致。
+;; 它顺带给出 stride / 字段偏移（vertex-stride-bytes / vertex-field-offset），
+;; 打包和属性描述都用这两个函数，所以不用数字节——但 location、分量数、GL 类型
+;; 仍然是手写的（见下面 init 里的 gl-vertex-attrib-pointer）。
 (shader-struct vertex (vec-3 pos) (vec-3 normal))
 
 (define cube-verts
@@ -676,48 +661,68 @@
   (mat4-mul (m-rotate-y (degrees-&gt;radians 15.0))
             (m-rotate-x (degrees-&gt;radians -12.0))))
 
-(define object-program #f)
-(define lamp-program #f)
-(define vao #f)
+(define object-program 0)
+(define lamp-program 0)
+;; uniform 位置：链接后查一次（名字用 GLSL 里的写法），之后每帧直接 uniform-set!
+(define obj-u-model-loc 0)
+(define obj-u-view-loc 0)
+(define obj-u-proj-loc 0)
+(define obj-u-normal-matrix-loc 0)
+(define obj-u-light-pos-loc 0)
+(define obj-u-light-color-loc 0)
+(define obj-u-view-pos-loc 0)
+(define obj-u-object-color-loc 0)
+(define lamp-u-model-loc 0)
+(define lamp-u-view-loc 0)
+(define lamp-u-proj-loc 0)
+(define lamp-u-light-color-loc 0)
+(define vao 0)
 
-;; 下面用宏写法；裸写法（每个属性一组 gl-vertex-attrib-pointer、每个 uniform 手查位置）
-;; 见教程 9.4。宏只负责生成这些裸调用，不改变 OpenGL 语义。
-;;
-;; uniform 位置不用手查了：glsl-uniform-setter! 从 shader 的编译期接口表按名字生成
-;; setter（类型也自动推）。两个 program 各加前缀，避免同名 uniform 撞。
-;; 裸写法： (define obj-u-model (uniform-location object-program "u_model"))
-;;          (uniform-set! obj-u-model 'mat-4 model)        ; draw 里
-;; glsl-uniform-setter! 把这两步合成 (set-obj-u-model! model)；拼错名字编译期报错。
-(glsl-uniform-setter! object-program vert-src frag-src #:prefix "obj-")
-(glsl-uniform-setter! lamp-program lamp-vert-src lamp-frag-src #:prefix "lamp-")
+;; uniform 位置：每个 uniform 在链接后查一次，存进变量，draw 里直接用 uniform-set!。
+;; 名字用 GLSL 里的写法（u_model），类型用 GLSL 的类型符号（mat-4）。
+;; 两个 program 的 uniform 同名，所以各带前缀区分（obj- / lamp-）。
+
+;; 这些缓冲句柄也放在顶层：关窗时 shutdown 要能拿到（0 = 还没创建）
+(define vbo 0)
+(define ebo 0)
 
 (define (init)
-  (set! object-program (own! 'program (build-program (gl-vertex-shader vert-src)
-                                                     (gl-fragment-shader frag-src))))
-  (set! lamp-program (own! 'program (build-program (gl-vertex-shader lamp-vert-src)
-                                                   (gl-fragment-shader lamp-frag-src))))
+  (set! object-program (build-program (gl-vertex-shader vert-src)
+                                      (gl-fragment-shader frag-src)))
+  (set! obj-u-model-loc (uniform-location object-program "u_model"))
+  (set! obj-u-view-loc (uniform-location object-program "u_view"))
+  (set! obj-u-proj-loc (uniform-location object-program "u_proj"))
+  (set! obj-u-normal-matrix-loc (uniform-location object-program "u_normal_matrix"))
+  (set! obj-u-light-pos-loc (uniform-location object-program "u_light_pos"))
+  (set! obj-u-light-color-loc (uniform-location object-program "u_light_color"))
+  (set! obj-u-view-pos-loc (uniform-location object-program "u_view_pos"))
+  (set! obj-u-object-color-loc (uniform-location object-program "u_object_color"))
+  (set! lamp-program (build-program (gl-vertex-shader lamp-vert-src)
+                                    (gl-fragment-shader lamp-frag-src)))
+  (set! lamp-u-model-loc (uniform-location lamp-program "u_model"))
+  (set! lamp-u-view-loc (uniform-location lamp-program "u_view"))
+  (set! lamp-u-proj-loc (uniform-location lamp-program "u_proj"))
+  (set! lamp-u-light-color-loc (uniform-location lamp-program "u_light_color"))
 
   ;; 画立体的东西就得开深度测试（06 课）。
   (gl-enable gl-depth-test)
 
   ;; ---- VAO / VBO / EBO ----
-  (set! vao (own! 'vertex-array (vertex-array-new)))
+  (set! vao (vertex-array-new))
   (gl-bind-vertex-array vao)
 
-  (define vbo (own! 'buffer (buffer-new)))
+  (set! vbo (buffer-new))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer cube-data gl-static-draw)
-  ;; 属性布局：shader 的 in 名和 shader-struct 字段名同名（pos / normal），
-  ;; glsl-vertex-layout! 按名字自动对齐：slot 取自 shader 的 location，
-  ;; 分量/类型/步长/偏移取自 struct 字段表；改名/类型不符会在编译期报错。
-  ;; 裸写法：
-  ;;   (gl-vertex-attrib-pointer 0 3 gl-float #f (vertex-stride) (vertex-field-offset 'pos))
-  ;;   (gl-enable-vertex-attrib-array 0)
-  ;;   (gl-vertex-attrib-pointer 1 3 gl-float #f (vertex-stride) (vertex-field-offset 'normal))
-  ;;   (gl-enable-vertex-attrib-array 1)
-  (glsl-vertex-layout! vert-src vertex)
+  ;; 属性布局：location 必须和 shader 的 layout(location N) 对上（0 = pos，1 = normal）。
+  ;; 分量数/类型跟着字段类型写；步长和偏移来自 shader-struct 的字段表，不用数字节
+  ;; （pos 在 0，normal 在 12，步长 24 = 6 个 float）。
+  (gl-vertex-attrib-pointer 0 3 gl-float #f (vertex-stride-bytes) (vertex-field-offset 'pos))
+  (gl-enable-vertex-attrib-array 0)
+  (gl-vertex-attrib-pointer 1 3 gl-float #f (vertex-stride-bytes) (vertex-field-offset 'normal))
+  (gl-enable-vertex-attrib-array 1)
 
-  (define ebo (own! 'buffer (buffer-new)))
+  (set! ebo (buffer-new))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -736,29 +741,43 @@
 
   ;; ---- 物体：逐片元算 ambient + diffuse + specular ----
   (program-use object-program)
-  ;; setter 的名字和类型都取自 shader 接口；不用再手查 uniform location。
-  (set-obj-u-model! model)
-  (set-obj-u-view! view)
-  (set-obj-u-proj! proj)
-  ;; 法线矩阵是 mat-3，setter 内部自动选 matrix-3fv 且 transpose 固定 #f：
+  ;; 位置已经在上面的 init 里查过一次；这里直接 uniform-set!（类型跟 shader 声明一致）。
+  (uniform-set! obj-u-model-loc 'mat-4 model)
+  (uniform-set! obj-u-view-loc 'mat-4 view)
+  (uniform-set! obj-u-proj-loc 'mat-4 proj)
+  ;; 法线矩阵是 mat-3，uniform-set! 按类型符号选 matrix-3fv，transpose 固定 #f：
   ;; lib/matrix.rkt 的矩阵都是列主序，正好是 GL 要的，传 #t 会让它转错。
-  (set-obj-u-normal-matrix! (m-normal-matrix model))
-  (set-obj-u-light-pos! light-pos)
-  (set-obj-u-light-color! light-color)
-  (set-obj-u-view-pos! eye-pos)
-  (set-obj-u-object-color! object-color)
+  (uniform-set! obj-u-normal-matrix-loc 'mat-3 (m-normal-matrix model))
+  (uniform-set! obj-u-light-pos-loc 'vec-3 light-pos)
+  (uniform-set! obj-u-light-color-loc 'vec-3 light-color)
+  (uniform-set! obj-u-view-pos-loc 'vec-3 eye-pos)
+  (uniform-set! obj-u-object-color-loc 'vec-3 object-color)
   (gl-draw-elements gl-triangles 36 gl-unsigned-short 0)
 
   ;; ---- 灯：同一份 VAO、换个 program，片元只输出光色（同 08 课） ----
   (program-use lamp-program)
   ;; 灯比物体小：先缩到 0.2 倍，再搬到 light-pos（从右往左作用在顶点上）。
-  (set-lamp-u-model! (mat4-mul (m-translate light-pos) (m-scale (vec-3 0.2 0.2 0.2))))
-  (set-lamp-u-view! view)
-  (set-lamp-u-proj! proj)
-  (set-lamp-u-light-color! light-color)
+  (uniform-set! lamp-u-model-loc 'mat-4 (mat4-mul (m-translate light-pos) (m-scale (vec-3 0.2 0.2 0.2))))
+  (uniform-set! lamp-u-view-loc 'mat-4 view)
+  (uniform-set! lamp-u-proj-loc 'mat-4 proj)
+  (uniform-set! lamp-u-light-color-loc 'vec-3 light-color)
   (gl-draw-elements gl-triangles 36 gl-unsigned-short 0)
 
   (gl-bind-vertex-array 0))
+
+;; ------------------------------------------------------------
+;; 关窗前释放：这些句柄归调用方，不删就一直占着显存
+;; ------------------------------------------------------------
+;; 顺序：先解绑当前状态，再删引用方（VAO）→ 缓冲 → 纹理 → program。
+;; 初始值是 0：0 不是有效对象，GL 的 delete 会忽略它（init 没跑完也能安全关窗）。
+(define (shutdown)
+  (gl-bind-vertex-array 0)      ; 别删正在用的
+  (gl-use-program 0)
+  (vertex-array-delete vao)
+  (buffer-delete vbo)
+  (buffer-delete ebo)
+  (program-delete object-program)
+  (program-delete lamp-program))
 
 (define-values (frame canvas)
   (make-window #:title "09 基础光照"
@@ -768,7 +787,7 @@
                #:draw draw
                ;; 窗口尺寸变化、viewport 重设之后被调用，参数是新的客户区宽高。
                #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
-               #:on-close release-all!))
+               #:on-close shutdown))
 (send frame show #t)
 
 ;; 本课没有 timer：立方体是静姿态，没有东西在动，就不必每 16ms 请求一次重绘（同 08 课）。
@@ -805,7 +824,7 @@
         <li>把 <code>light-pos</code>（以及灯立方体的位置）的 z 从 <code>2.0</code> 改成 <code>0.0</code>——也就是 08 课的机位：灯会走进画面右上角，同时高光从正面中央挪开。对照两课就能看清「光的位置」同时管着两件事：灯立方体画在哪、以及三项光照各自往哪个方向算。</li>
       </ol>
       <div class="note">
-        <p><b>GPU 资源</b>本节代码里每个 <code>*-new</code> / <code>build-program</code> 都用 <code>own!</code> 登记，关窗时 <code>release-all!</code> 统一删除。为什么这些句柄 GC 管不了，见 <a href="../02-hello-triangle/index.html#s2-9">02 · 2.9</a>。</p>
+        <p><b>GPU 资源</b>本节创建的 program / VAO / VBO（以及纹理）都在文件末尾的 <code>shutdown</code> 里用 <code>program-delete</code> / <code>vertex-array-delete</code> / <code>buffer-delete</code> 显式删除，由 <code>#:on-close shutdown</code> 在关窗时触发。为什么这些句柄 GC 管不了、为什么必须手动删，见 <a href="../02-hello-triangle/index.html#s2-9">02 · 2.9</a>。</p>
       </div>
 
 
@@ -837,11 +856,11 @@
           </tr>
           <tr>
             <td>mat-3 上传</td>
-            <td><code>(set-obj-u-normal-matrix! (m-normal-matrix model))</code> 内部选 <code>gl-uniform-matrix-3fv</code> 且 transpose 固定 <code>#f</code>——列主序与 lib/matrix.rkt 一致</td>
+            <td><code>(uniform-set! obj-u-normal-matrix-loc 'mat-3 (m-normal-matrix model))</code> 内部选 <code>gl-uniform-matrix-3fv</code> 且 transpose 固定 <code>#f</code>——列主序与 lib/matrix.rkt 一致</td>
           </tr>
           <tr>
-            <td>glsl-struct</td>
-            <td>把 shader 的顶点结构镜像到 CPU 侧；<code>glsl-vertex-layout!</code> 按名字自动对齐，生成 attrib 调用（slot 取自 shader 的 location，分量/步长/偏移取自字段表）</td>
+            <td>shader-struct</td>
+            <td>把 shader 的顶点结构镜像到 CPU 侧：给出字段表、步长与字段偏移（<code>vertex-stride-bytes</code> / <code>vertex-field-offset</code>），打包和 attrib 调用都用它；location / 分量数仍手写</td>
           </tr>
         </tbody>
       </table>
@@ -858,8 +877,8 @@
         <li><a href="#s9-1-4">9.1.4 三项相加</a></li>
         <li><a href="#s9-1-5">9.1.5 先在 CPU 上算三个点</a></li>
         <li><a href="#s9-2">9.2 法线为什么要 inverse-transpose</a></li>
-        <li><a href="#s9-3">9.3 在片元里算 + 布局用 glsl-struct</a></li>
-        <li><a href="#s9-4">9.4 三个便捷原语与它们的裸写法</a></li>
+        <li><a href="#s9-3">9.3 在片元里算 + 布局用 shader-struct</a></li>
+        <li><a href="#s9-4">9.4 属性布局与 uniform 位置：手写版</a></li>
         <li><a href="#s9-code">完整代码</a></li>
         <li><a href="#s9-exercise">试试看</a></li>
         <li><a href="#s9-summary">小结</a></li>

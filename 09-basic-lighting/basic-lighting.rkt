@@ -20,7 +20,6 @@
 (require racket/class
          racket/math                     ; degrees->radians
          "../lib/window.rkt"
-         "../lib/gpu.rkt"
          "../lib/matrix.rkt")            ; m-look-at / m-perspective / m-normal-matrix / …
 
 ;; ------------------------------------------------------------
@@ -40,8 +39,8 @@
 ;; 光照明亮程度必须逐片元算，这两个量就是它要的输入。
 ;;
 ;; (glsl-shader name form ...) 与 (glsl ...) 一样产出 shader，并额外把编译期接口表
-;; 绑为 name-interface。裸等价： (define name (glsl ...))——但那样接口只能运行期用
-;; (shader-program-interface name) 取，宏（vertex-layout / uniform-setter）用不了。
+;; 绑为 name-interface（当前没有宏消费它，留着以后用）。裸等价： (define name (glsl ...))，
+;; 接口只能在运行期用 (shader-program-interface name) 取。
 (glsl-shader vert-src
   (version 330 core)
   (layout (location 0) in vec-3 pos)       ; 属性名 = CPU 侧 shader-struct 字段名
@@ -111,10 +110,10 @@
 ;; 三项光照全靠它。同一个空间角落在不同的面上法线不同（前面 (0,0,1)、右面 (1,0,0)…），
 ;; 所以还是 24 个顶点、每个面 4 个。
 ;;
-;; 布局不再手写：shader-struct 把 shader 的 struct 镜像到 CPU 侧——字段名、类型、顺序
-;; 和 shader 里一致，步长和偏移就自动有了。03/04 课的 shader-stride-bytes /
-;; shader-byte-size 已经消灭了字节字面量，这一步再进一步：偏移不再按"第几个字段"数，
-;; 而是按名字自动对齐（见下面 init 里的 glsl-vertex-layout!）。
+;; shader-struct 把 shader 的 struct 镜像到 CPU 侧：字段名、类型、顺序和 shader 里一致。
+;; 它顺带给出 stride / 字段偏移（vertex-stride-bytes / vertex-field-offset），
+;; 打包和属性描述都用这两个函数，所以不用数字节——但 location、分量数、GL 类型
+;; 仍然是手写的（见下面 init 里的 gl-vertex-attrib-pointer）。
 (shader-struct vertex (vec-3 pos) (vec-3 normal))
 
 (define cube-verts
@@ -182,48 +181,68 @@
   (mat4-mul (m-rotate-y (degrees->radians 15.0))
             (m-rotate-x (degrees->radians -12.0))))
 
-(define object-program #f)
-(define lamp-program #f)
-(define vao #f)
+(define object-program 0)
+(define lamp-program 0)
+;; uniform 位置：链接后查一次（名字用 GLSL 里的写法），之后每帧直接 uniform-set!
+(define obj-u-model-loc 0)
+(define obj-u-view-loc 0)
+(define obj-u-proj-loc 0)
+(define obj-u-normal-matrix-loc 0)
+(define obj-u-light-pos-loc 0)
+(define obj-u-light-color-loc 0)
+(define obj-u-view-pos-loc 0)
+(define obj-u-object-color-loc 0)
+(define lamp-u-model-loc 0)
+(define lamp-u-view-loc 0)
+(define lamp-u-proj-loc 0)
+(define lamp-u-light-color-loc 0)
+(define vao 0)
 
-;; 下面用宏写法；裸写法（每个属性一组 gl-vertex-attrib-pointer、每个 uniform 手查位置）
-;; 见教程 9.4。宏只负责生成这些裸调用，不改变 OpenGL 语义。
-;;
-;; uniform 位置不用手查了：glsl-uniform-setter! 从 shader 的编译期接口表按名字生成
-;; setter（类型也自动推）。两个 program 各加前缀，避免同名 uniform 撞。
-;; 裸写法： (define obj-u-model (uniform-location object-program "u_model"))
-;;          (uniform-set! obj-u-model 'mat-4 model)        ; draw 里
-;; glsl-uniform-setter! 把这两步合成 (set-obj-u-model! model)；拼错名字编译期报错。
-(glsl-uniform-setter! object-program vert-src frag-src #:prefix "obj-")
-(glsl-uniform-setter! lamp-program lamp-vert-src lamp-frag-src #:prefix "lamp-")
+;; uniform 位置：每个 uniform 在链接后查一次，存进变量，draw 里直接用 uniform-set!。
+;; 名字用 GLSL 里的写法（u_model），类型用 GLSL 的类型符号（mat-4）。
+;; 两个 program 的 uniform 同名，所以各带前缀区分（obj- / lamp-）。
+
+;; 这些缓冲句柄也放在顶层：关窗时 shutdown 要能拿到（0 = 还没创建）
+(define vbo 0)
+(define ebo 0)
 
 (define (init)
-  (set! object-program (own! 'program (build-program (gl-vertex-shader vert-src)
-                                                     (gl-fragment-shader frag-src))))
-  (set! lamp-program (own! 'program (build-program (gl-vertex-shader lamp-vert-src)
-                                                   (gl-fragment-shader lamp-frag-src))))
+  (set! object-program (build-program (gl-vertex-shader vert-src)
+                                      (gl-fragment-shader frag-src)))
+  (set! obj-u-model-loc (uniform-location object-program "u_model"))
+  (set! obj-u-view-loc (uniform-location object-program "u_view"))
+  (set! obj-u-proj-loc (uniform-location object-program "u_proj"))
+  (set! obj-u-normal-matrix-loc (uniform-location object-program "u_normal_matrix"))
+  (set! obj-u-light-pos-loc (uniform-location object-program "u_light_pos"))
+  (set! obj-u-light-color-loc (uniform-location object-program "u_light_color"))
+  (set! obj-u-view-pos-loc (uniform-location object-program "u_view_pos"))
+  (set! obj-u-object-color-loc (uniform-location object-program "u_object_color"))
+  (set! lamp-program (build-program (gl-vertex-shader lamp-vert-src)
+                                    (gl-fragment-shader lamp-frag-src)))
+  (set! lamp-u-model-loc (uniform-location lamp-program "u_model"))
+  (set! lamp-u-view-loc (uniform-location lamp-program "u_view"))
+  (set! lamp-u-proj-loc (uniform-location lamp-program "u_proj"))
+  (set! lamp-u-light-color-loc (uniform-location lamp-program "u_light_color"))
 
   ;; 画立体的东西就得开深度测试（06 课）。
   (gl-enable gl-depth-test)
 
   ;; ---- VAO / VBO / EBO ----
-  (set! vao (own! 'vertex-array (vertex-array-new)))
+  (set! vao (vertex-array-new))
   (gl-bind-vertex-array vao)
 
-  (define vbo (own! 'buffer (buffer-new)))
+  (set! vbo (buffer-new))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer cube-data gl-static-draw)
-  ;; 属性布局：shader 的 in 名和 shader-struct 字段名同名（pos / normal），
-  ;; glsl-vertex-layout! 按名字自动对齐：slot 取自 shader 的 location，
-  ;; 分量/类型/步长/偏移取自 struct 字段表；改名/类型不符会在编译期报错。
-  ;; 裸写法：
-  ;;   (gl-vertex-attrib-pointer 0 3 gl-float #f (vertex-stride) (vertex-field-offset 'pos))
-  ;;   (gl-enable-vertex-attrib-array 0)
-  ;;   (gl-vertex-attrib-pointer 1 3 gl-float #f (vertex-stride) (vertex-field-offset 'normal))
-  ;;   (gl-enable-vertex-attrib-array 1)
-  (glsl-vertex-layout! vert-src vertex)
+  ;; 属性布局：location 必须和 shader 的 layout(location N) 对上（0 = pos，1 = normal）。
+  ;; 分量数/类型跟着字段类型写；步长和偏移来自 shader-struct 的字段表，不用数字节
+  ;; （pos 在 0，normal 在 12，步长 24 = 6 个 float）。
+  (gl-vertex-attrib-pointer 0 3 gl-float #f (vertex-stride-bytes) (vertex-field-offset 'pos))
+  (gl-enable-vertex-attrib-array 0)
+  (gl-vertex-attrib-pointer 1 3 gl-float #f (vertex-stride-bytes) (vertex-field-offset 'normal))
+  (gl-enable-vertex-attrib-array 1)
 
-  (define ebo (own! 'buffer (buffer-new)))
+  (set! ebo (buffer-new))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -242,29 +261,43 @@
 
   ;; ---- 物体：逐片元算 ambient + diffuse + specular ----
   (program-use object-program)
-  ;; setter 的名字和类型都取自 shader 接口；不用再手查 uniform location。
-  (set-obj-u-model! model)
-  (set-obj-u-view! view)
-  (set-obj-u-proj! proj)
-  ;; 法线矩阵是 mat-3，setter 内部自动选 matrix-3fv 且 transpose 固定 #f：
+  ;; 位置已经在上面的 init 里查过一次；这里直接 uniform-set!（类型跟 shader 声明一致）。
+  (uniform-set! obj-u-model-loc 'mat-4 model)
+  (uniform-set! obj-u-view-loc 'mat-4 view)
+  (uniform-set! obj-u-proj-loc 'mat-4 proj)
+  ;; 法线矩阵是 mat-3，uniform-set! 按类型符号选 matrix-3fv，transpose 固定 #f：
   ;; lib/matrix.rkt 的矩阵都是列主序，正好是 GL 要的，传 #t 会让它转错。
-  (set-obj-u-normal-matrix! (m-normal-matrix model))
-  (set-obj-u-light-pos! light-pos)
-  (set-obj-u-light-color! light-color)
-  (set-obj-u-view-pos! eye-pos)
-  (set-obj-u-object-color! object-color)
+  (uniform-set! obj-u-normal-matrix-loc 'mat-3 (m-normal-matrix model))
+  (uniform-set! obj-u-light-pos-loc 'vec-3 light-pos)
+  (uniform-set! obj-u-light-color-loc 'vec-3 light-color)
+  (uniform-set! obj-u-view-pos-loc 'vec-3 eye-pos)
+  (uniform-set! obj-u-object-color-loc 'vec-3 object-color)
   (gl-draw-elements gl-triangles 36 gl-unsigned-short 0)
 
   ;; ---- 灯：同一份 VAO、换个 program，片元只输出光色（同 08 课） ----
   (program-use lamp-program)
   ;; 灯比物体小：先缩到 0.2 倍，再搬到 light-pos（从右往左作用在顶点上）。
-  (set-lamp-u-model! (mat4-mul (m-translate light-pos) (m-scale (vec-3 0.2 0.2 0.2))))
-  (set-lamp-u-view! view)
-  (set-lamp-u-proj! proj)
-  (set-lamp-u-light-color! light-color)
+  (uniform-set! lamp-u-model-loc 'mat-4 (mat4-mul (m-translate light-pos) (m-scale (vec-3 0.2 0.2 0.2))))
+  (uniform-set! lamp-u-view-loc 'mat-4 view)
+  (uniform-set! lamp-u-proj-loc 'mat-4 proj)
+  (uniform-set! lamp-u-light-color-loc 'vec-3 light-color)
   (gl-draw-elements gl-triangles 36 gl-unsigned-short 0)
 
   (gl-bind-vertex-array 0))
+
+;; ------------------------------------------------------------
+;; 关窗前释放：这些句柄归调用方，不删就一直占着显存
+;; ------------------------------------------------------------
+;; 顺序：先解绑当前状态，再删引用方（VAO）→ 缓冲 → 纹理 → program。
+;; 初始值是 0：0 不是有效对象，GL 的 delete 会忽略它（init 没跑完也能安全关窗）。
+(define (shutdown)
+  (gl-bind-vertex-array 0)      ; 别删正在用的
+  (gl-use-program 0)
+  (vertex-array-delete vao)
+  (buffer-delete vbo)
+  (buffer-delete ebo)
+  (program-delete object-program)
+  (program-delete lamp-program))
 
 (define-values (frame canvas)
   (make-window #:title "09 基础光照"
@@ -274,7 +307,7 @@
                #:draw draw
                ;; 窗口尺寸变化、viewport 重设之后被调用，参数是新的客户区宽高。
                #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
-               #:on-close release-all!))
+               #:on-close shutdown))
 (send frame show #t)
 
 ;; 本课没有 timer：立方体是静姿态，没有东西在动，就不必每 16ms 请求一次重绘（同 08 课）。

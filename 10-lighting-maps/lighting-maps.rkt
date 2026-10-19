@@ -18,7 +18,6 @@
 (require racket/class
          racket/math                     ; degrees->radians
          "../lib/window.rkt"
-         "../lib/gpu.rkt"
          "../lib/matrix.rkt")            ; m-look-at / m-perspective / m-normal-matrix / …
 
 ;; ------------------------------------------------------------
@@ -216,22 +215,42 @@
   (mat4-mul (m-rotate-y (degrees->radians 15.0))
             (m-rotate-x (degrees->radians -12.0))))
 
-(define object-program #f)
-(define vao #f)
-(define diffuse-map #f)
-(define spec-map #f)
+(define object-program 0)
+;; uniform 位置：链接后查一次（名字用 GLSL 里的写法），之后每帧直接 uniform-set!
+(define u-model-loc 0)
+(define u-view-loc 0)
+(define u-proj-loc 0)
+(define u-normal-matrix-loc 0)
+(define u-light-pos-loc 0)
+(define u-light-color-loc 0)
+(define u-view-pos-loc 0)
+(define u-diffuse-map-loc 0)
+(define u-spec-map-loc 0)
+(define vao 0)
+(define diffuse-map 0)
+(define spec-map 0)
 ;; uniform 位置每个 program 各有一份，链接完查一次存起来（同 08 / 09 课）。
 
 ;; 本课不画灯立方体。08 / 09 课画它，是为了说明"光在哪"——一个白方块让 u-light-pos
 ;; 那个坐标看得见。这一课的焦点是贴图，多画一个方块只会挡在物体前面添乱，
 ;; 所以光位置固定 (1.2, 1.0, 2.0)、只当坐标用（09 课末尾也提过：灯落在画面之外
 ;; 不影响光照，光不必出现在画面里才能照亮物体）。
-
-(glsl-uniform-setter! object-program vert-src frag-src)
+;; 这些缓冲句柄也放在顶层：关窗时 shutdown 要能拿到（0 = 还没创建）
+(define vbo 0)
+(define ebo 0)
 
 (define (init)
-  (set! object-program (own! 'program (build-program (gl-vertex-shader vert-src)
-                                                     (gl-fragment-shader frag-src))))
+  (set! object-program (build-program (gl-vertex-shader vert-src)
+                                      (gl-fragment-shader frag-src)))
+  (set! u-model-loc (uniform-location object-program "u_model"))
+  (set! u-view-loc (uniform-location object-program "u_view"))
+  (set! u-proj-loc (uniform-location object-program "u_proj"))
+  (set! u-normal-matrix-loc (uniform-location object-program "u_normal_matrix"))
+  (set! u-light-pos-loc (uniform-location object-program "u_light_pos"))
+  (set! u-light-color-loc (uniform-location object-program "u_light_color"))
+  (set! u-view-pos-loc (uniform-location object-program "u_view_pos"))
+  (set! u-diffuse-map-loc (uniform-location object-program "u_diffuse_map"))
+  (set! u-spec-map-loc (uniform-location object-program "u_spec_map"))
 
   ;; 画立体的东西就得开深度测试（06 课）。
   (gl-enable gl-depth-test)
@@ -244,7 +263,7 @@
 
   ;; diffuse map → 0 号槽。上传步骤和 04 课一模一样：选槽 → 绑纹理 → 设参数 →
   ;; 传像素 → 生成 mipmap → 把槽号告诉采样器。
-  (set! diffuse-map (own! 'texture (texture-new)))
+  (set! diffuse-map (texture-new))
   (gl-active-texture gl-texture0)
   (gl-bind-texture gl-texture-2d diffuse-map)
   (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-s gl-repeat)
@@ -255,11 +274,11 @@
                    gl-rgba gl-unsigned-byte (make-checker-texture tex-size tex-cell))
   ;; 用了 mipmap 过滤就必须生成 mipmap，否则纹理不完整、采样结果是黑的（04 课的坑）。
   (gl-generate-mipmap gl-texture-2d)
-  (set-u-diffuse-map! 0)
+  (uniform-set! u-diffuse-map-loc 'sampler-2d 0)
 
   ;; specular map → 1 号槽。槽号常量连续：第 i 号槽写 (+ gl-texture0 i)，
   ;; 本课只有两张图，直接写 gl-texture1。
-  (set! spec-map (own! 'texture (texture-new)))
+  (set! spec-map (texture-new))
   (gl-active-texture gl-texture1)
   (gl-bind-texture gl-texture-2d spec-map)
   (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-s gl-repeat)
@@ -269,20 +288,25 @@
   (gl-tex-image-2d gl-texture-2d 0 gl-rgba tex-size tex-size 0
                    gl-rgba gl-unsigned-byte (make-spec-mask-texture tex-size))
   (gl-generate-mipmap gl-texture-2d)
-  (set-u-spec-map! 1)
+  (uniform-set! u-spec-map-loc 'sampler-2d 1)
 
   ;; ---- VAO / VBO / EBO ----
-  (set! vao (own! 'vertex-array (vertex-array-new)))
+  (set! vao (vertex-array-new))
   (gl-bind-vertex-array vao)
 
-  (define vbo (own! 'buffer (buffer-new)))
+  (set! vbo (buffer-new))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer cube-data gl-static-draw)
-  ;; shader 的 in 名和 shader-struct 字段名同名，glsl-vertex-layout! 按名字自动对齐：
-  ;; slot 取自 shader 的 location，步长/偏移取自字段表（无字节字面量）。
-  (glsl-vertex-layout! vert-src vertex)
+  ;; 属性布局：location 和 shader 的 layout(location N) 对上（pos 0、normal 1、uv 2）。
+  ;; 步长/偏移来自 shader-struct 字段表（32 = 8 个 float；偏移 0 / 12 / 24）。
+  (gl-vertex-attrib-pointer 0 3 gl-float #f (vertex-stride-bytes) (vertex-field-offset 'pos))
+  (gl-enable-vertex-attrib-array 0)
+  (gl-vertex-attrib-pointer 1 3 gl-float #f (vertex-stride-bytes) (vertex-field-offset 'normal))
+  (gl-enable-vertex-attrib-array 1)
+  (gl-vertex-attrib-pointer 2 2 gl-float #f (vertex-stride-bytes) (vertex-field-offset 'uv))
+  (gl-enable-vertex-attrib-array 2)
 
-  (define ebo (own! 'buffer (buffer-new)))
+  (set! ebo (buffer-new))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -300,19 +324,34 @@
   (program-use object-program)
   (gl-bind-vertex-array vao)
 
-  (set-u-model! model)
-  (set-u-view! view)
-  (set-u-proj! proj)
-  ;; 法线矩阵是 mat-3，setter 内部自动选 matrix-3fv 且 transpose 固定 #f（同 09 课）。
-  (set-u-normal-matrix! (m-normal-matrix model))
-  (set-u-light-pos! light-pos)
-  (set-u-light-color! light-color)
-  (set-u-view-pos! eye-pos)
+  (uniform-set! u-model-loc 'mat-4 model)
+  (uniform-set! u-view-loc 'mat-4 view)
+  (uniform-set! u-proj-loc 'mat-4 proj)
+  ;; 法线矩阵是 mat-3，uniform-set! 按类型符号选 matrix-3fv，transpose 固定 #f（同 09 课）。
+  (uniform-set! u-normal-matrix-loc 'mat-3 (m-normal-matrix model))
+  (uniform-set! u-light-pos-loc 'vec-3 light-pos)
+  (uniform-set! u-light-color-loc 'vec-3 light-color)
+  (uniform-set! u-view-pos-loc 'vec-3 eye-pos)
   ;; 采样器 uniform 在 init 里报过槽号（0 和 1），它们是"用哪张图"的设置，不随帧变，
   ;; 所以 draw 里不用再传一次（同 04 课）。
   (gl-draw-elements gl-triangles 36 gl-unsigned-short 0)
 
   (gl-bind-vertex-array 0))
+
+;; ------------------------------------------------------------
+;; 关窗前释放：这些句柄归调用方，不删就一直占着显存
+;; ------------------------------------------------------------
+;; 顺序：先解绑当前状态，再删引用方（VAO）→ 缓冲 → 纹理 → program。
+;; 初始值是 0：0 不是有效对象，GL 的 delete 会忽略它（init 没跑完也能安全关窗）。
+(define (shutdown)
+  (gl-bind-vertex-array 0)      ; 别删正在用的
+  (gl-use-program 0)
+  (vertex-array-delete vao)
+  (buffer-delete vbo)
+  (buffer-delete ebo)
+  (texture-delete diffuse-map)
+  (texture-delete spec-map)
+  (program-delete object-program))
 
 (define-values (frame canvas)
   (make-window #:title "10 光照贴图"
@@ -322,7 +361,7 @@
                #:draw draw
                ;; 窗口尺寸变化、viewport 重设之后被调用，参数是新的客户区宽高。
                #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
-               #:on-close release-all!))
+               #:on-close shutdown))
 (send frame show #t)
 
 ;; 本课没有 timer：立方体是静姿态，没有东西在动，就不必每 16ms 请求一次重绘（同 08 / 09）。

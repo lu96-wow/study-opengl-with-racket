@@ -10,8 +10,7 @@
 ;; 本文件继续使用 02.0 介绍的便利层；raw 等价物见教程 2.0 的对照表。
 
 (require racket/class
-         "../lib/window.rkt"
-         "../lib/gpu.rkt")
+         "../lib/window.rkt")
 
 ;; 两段着色器：和上一课一样，只是颜色换成蓝色
 (define vert-src
@@ -39,20 +38,23 @@
 (define indices (u16-array 0 1 2
                            0 2 3))
 
-(define program #f)
-(define vao #f)
+(define program 0)
+(define vao 0)
+;; 这些缓冲句柄也放在顶层：关窗时 shutdown 要能拿到（0 = 还没创建）
+(define vbo 0)
+(define ebo 0)
 
 (define (init)
-  (set! program (own! 'program (build-program (gl-vertex-shader vert-src)
-                                              (gl-fragment-shader frag-src))))
+  (set! program (build-program (gl-vertex-shader vert-src)
+                               (gl-fragment-shader frag-src)))
 
   ;; 顶点数据上传：只依赖 gl-array-buffer 这个绑定，和 VAO 无关
-  (define vbo (own! 'buffer (buffer-new)))
+  (set! vbo (buffer-new))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer vertices gl-static-draw)
 
   ;; 建 VAO、描述位置属性（这两步依赖 VAO）
-  (set! vao (own! 'vertex-array (vertex-array-new)))
+  (set! vao (vertex-array-new))
   (gl-bind-vertex-array vao)
   (gl-vertex-attrib-pointer 0 3 gl-float #f 0 0)
   (gl-enable-vertex-attrib-array 0)
@@ -60,7 +62,7 @@
   ;; 索引缓冲 EBO。
   ;; ★和 ARRAY_BUFFER 不同：ELEMENT_ARRAY_BUFFER 的绑定是 VAO 状态，
   ;;   所以必须在 VAO 还绑着的时候绑它，VAO 才会记住；画的时候才找得到。
-  (define ebo (own! 'buffer (buffer-new)))
+  (set! ebo (buffer-new))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -77,9 +79,22 @@
   (gl-draw-elements gl-triangles 6 gl-unsigned-short 0)
   (gl-bind-vertex-array 0))
 
+;; ------------------------------------------------------------
+;; 关窗前释放：这些句柄归调用方，不删就一直占着显存
+;; ------------------------------------------------------------
+;; 顺序：先解绑当前状态，再删引用方（VAO）→ 缓冲 → 纹理 → program。
+;; 初始值是 0：0 不是有效对象，GL 的 delete 会忽略它（init 没跑完也能安全关窗）。
+(define (shutdown)
+  (gl-bind-vertex-array 0)      ; 别删正在用的
+  (gl-use-program 0)
+  (vertex-array-delete vao)
+  (buffer-delete vbo)
+  (buffer-delete ebo)
+  (program-delete program))
+
 (define-values (frame canvas)
   (make-window #:title "02 矩形（索引绘制）"
                #:init init
                #:draw draw
-               #:on-close release-all!))
+               #:on-close shutdown))
 (send frame show #t)

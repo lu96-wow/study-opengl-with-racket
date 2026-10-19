@@ -21,7 +21,6 @@
          racket/gui                     ; timer%
          racket/math                    ; degrees->radians / pi
          "../lib/window.rkt"
-         "../lib/gpu.rkt"
          "../lib/matrix.rkt"
          "../lib/obj.rkt"
          "../lib/sprite-sheet.rkt")
@@ -219,72 +218,127 @@
 ;; ------------------------------------------------------------
 ;; 四、GL 对象
 ;; ------------------------------------------------------------
-(define sky-program #f)
-(define ground-program #f)
-(define teapot-program #f)
-(define sprite-program #f)
+(define sky-program 0)
+(define ground-program 0)
+(define teapot-program 0)
+(define sprite-program 0)
+;; uniform 位置：链接后查一次（名字用 GLSL 里的写法），之后每帧直接 uniform-set!
+(define ground-u-view-loc 0)
+(define ground-u-proj-loc 0)
+(define ground-u-bg-color-loc 0)
+(define teapot-u-view-loc 0)
+(define teapot-u-proj-loc 0)
+(define teapot-u-model-loc 0)
+(define teapot-u-normal-matrix-loc 0)
+(define teapot-u-base-color-loc 0)
+(define teapot-u-rim-color-loc 0)
+(define teapot-u-light-pos-loc 0)
+(define teapot-u-light-color-loc 0)
+(define teapot-u-view-pos-loc 0)
+(define sprite-u-view-loc 0)
+(define sprite-u-proj-loc 0)
+(define sprite-u-model-loc 0)
+(define sprite-u-atlas-loc 0)
+(define sprite-u-frame-loc 0)
+(define sprite-u-cols-loc 0)
+(define sprite-u-rows-loc 0)
+(define sprite-u-tint-loc 0)
 
-(define sky-vao #f)
-(define ground-vao #f)
-(define teapot-vao #f)
-(define sprite-vao #f)
+(define sky-vao 0)
+(define ground-vao 0)
+(define teapot-vao 0)
+(define sprite-vao 0)
 (define sheet #f)
-
-(glsl-uniform-setter! sky-program sky-vert sky-frag #:prefix "sky-")
-(glsl-uniform-setter! ground-program ground-vert ground-frag #:prefix "ground-")
-(glsl-uniform-setter! teapot-program teapot-vert teapot-frag #:prefix "teapot-")
-(glsl-uniform-setter! sprite-program sprite-vert sprite-frag #:prefix "sprite-")
+;; 这些缓冲句柄也放在顶层：关窗时 shutdown 要能拿到（0 = 还没创建）
+(define sky-vbo 0)
+(define ground-vbo 0)
+(define teapot-vbo 0)
+(define teapot-ebo 0)
+(define sprite-vbo 0)
+(define sprite-ebo 0)
 
 (define (init)
-  (set! sky-program (own! 'program (build-program (gl-vertex-shader sky-vert)
-                                                  (gl-fragment-shader sky-frag))))
-  (set! ground-program (own! 'program (build-program (gl-vertex-shader ground-vert)
-                                                     (gl-fragment-shader ground-frag))))
-  (set! teapot-program (own! 'program (build-program (gl-vertex-shader teapot-vert)
-                                                     (gl-fragment-shader teapot-frag))))
-  (set! sprite-program (own! 'program (build-program (gl-vertex-shader sprite-vert)
-                                                     (gl-fragment-shader sprite-frag))))
+  (set! sky-program (build-program (gl-vertex-shader sky-vert)
+                                   (gl-fragment-shader sky-frag)))
+  (set! ground-program (build-program (gl-vertex-shader ground-vert)
+                                      (gl-fragment-shader ground-frag)))
+  (set! ground-u-view-loc (uniform-location ground-program "u_view"))
+  (set! ground-u-proj-loc (uniform-location ground-program "u_proj"))
+  (set! ground-u-bg-color-loc (uniform-location ground-program "u_bg_color"))
+  (set! teapot-program (build-program (gl-vertex-shader teapot-vert)
+                                      (gl-fragment-shader teapot-frag)))
+  (set! teapot-u-view-loc (uniform-location teapot-program "u_view"))
+  (set! teapot-u-proj-loc (uniform-location teapot-program "u_proj"))
+  (set! teapot-u-model-loc (uniform-location teapot-program "u_model"))
+  (set! teapot-u-normal-matrix-loc (uniform-location teapot-program "u_normal_matrix"))
+  (set! teapot-u-base-color-loc (uniform-location teapot-program "u_base_color"))
+  (set! teapot-u-rim-color-loc (uniform-location teapot-program "u_rim_color"))
+  (set! teapot-u-light-pos-loc (uniform-location teapot-program "u_light_pos"))
+  (set! teapot-u-light-color-loc (uniform-location teapot-program "u_light_color"))
+  (set! teapot-u-view-pos-loc (uniform-location teapot-program "u_view_pos"))
+  (set! sprite-program (build-program (gl-vertex-shader sprite-vert)
+                                      (gl-fragment-shader sprite-frag)))
+  (set! sprite-u-view-loc (uniform-location sprite-program "u_view"))
+  (set! sprite-u-proj-loc (uniform-location sprite-program "u_proj"))
+  (set! sprite-u-model-loc (uniform-location sprite-program "u_model"))
+  (set! sprite-u-atlas-loc (uniform-location sprite-program "u_atlas"))
+  (set! sprite-u-frame-loc (uniform-location sprite-program "u_frame"))
+  (set! sprite-u-cols-loc (uniform-location sprite-program "u_cols"))
+  (set! sprite-u-rows-loc (uniform-location sprite-program "u_rows"))
+  (set! sprite-u-tint-loc (uniform-location sprite-program "u_tint"))
 
   (gl-enable gl-depth-test)
 
   ;; 天空 VAO
-  (set! sky-vao (own! 'vertex-array (vertex-array-new)))
+  (set! sky-vao (vertex-array-new))
   (gl-bind-vertex-array sky-vao)
-  (define sky-vbo (own! 'buffer (buffer-new)))
+  (set! sky-vbo (buffer-new))
   (gl-bind-buffer gl-array-buffer sky-vbo)
   (buffer-upload gl-array-buffer sky-data gl-static-draw)
-  (glsl-vertex-layout! sky-vert sky-vertex)
+  ;; 顶点属性：手写（sky 只有 pos，vec2）
+  (gl-vertex-attrib-pointer 0 2 gl-float #f (sky-vertex-stride-bytes) (sky-vertex-field-offset 'pos))
+  (gl-enable-vertex-attrib-array 0)
   (gl-bind-vertex-array 0)
 
   ;; 地面 VAO
-  (set! ground-vao (own! 'vertex-array (vertex-array-new)))
+  (set! ground-vao (vertex-array-new))
   (gl-bind-vertex-array ground-vao)
-  (define ground-vbo (own! 'buffer (buffer-new)))
+  (set! ground-vbo (buffer-new))
   (gl-bind-buffer gl-array-buffer ground-vbo)
   (buffer-upload gl-array-buffer ground-data gl-static-draw)
-  (glsl-vertex-layout! ground-vert ground-vertex)
+  ;; 顶点属性：手写（ground 只有 pos，vec3）
+  (gl-vertex-attrib-pointer 0 3 gl-float #f (ground-vertex-stride-bytes) (ground-vertex-field-offset 'pos))
+  (gl-enable-vertex-attrib-array 0)
   (gl-bind-vertex-array 0)
 
   ;; 茶壶 VAO
-  (set! teapot-vao (own! 'vertex-array (vertex-array-new)))
+  (set! teapot-vao (vertex-array-new))
   (gl-bind-vertex-array teapot-vao)
-  (define teapot-vbo (own! 'buffer (buffer-new)))
+  (set! teapot-vbo (buffer-new))
   (gl-bind-buffer gl-array-buffer teapot-vbo)
   (buffer-upload gl-array-buffer teapot-data gl-static-draw)
-  (glsl-vertex-layout! teapot-vert teapot-vertex)
-  (define teapot-ebo (own! 'buffer (buffer-new)))
+  ;; 顶点属性：手写（teapot：pos 0、normal 12）
+  (gl-vertex-attrib-pointer 0 3 gl-float #f (teapot-vertex-stride-bytes) (teapot-vertex-field-offset 'pos))
+  (gl-enable-vertex-attrib-array 0)
+  (gl-vertex-attrib-pointer 1 3 gl-float #f (teapot-vertex-stride-bytes) (teapot-vertex-field-offset 'normal))
+  (gl-enable-vertex-attrib-array 1)
+  (set! teapot-ebo (buffer-new))
   (gl-bind-buffer gl-element-array-buffer teapot-ebo)
   (buffer-upload gl-element-array-buffer teapot-indices gl-static-draw)
   (gl-bind-vertex-array 0)
 
   ;; 精灵 VAO
-  (set! sprite-vao (own! 'vertex-array (vertex-array-new)))
+  (set! sprite-vao (vertex-array-new))
   (gl-bind-vertex-array sprite-vao)
-  (define sprite-vbo (own! 'buffer (buffer-new)))
+  (set! sprite-vbo (buffer-new))
   (gl-bind-buffer gl-array-buffer sprite-vbo)
   (buffer-upload gl-array-buffer sprite-quad gl-static-draw)
-  (glsl-vertex-layout! sprite-vert sprite-vertex)
-  (define sprite-ebo (own! 'buffer (buffer-new)))
+  ;; 顶点属性：手写（sprite：pos 0、uv 12）
+  (gl-vertex-attrib-pointer 0 3 gl-float #f (sprite-vertex-stride-bytes) (sprite-vertex-field-offset 'pos))
+  (gl-enable-vertex-attrib-array 0)
+  (gl-vertex-attrib-pointer 1 2 gl-float #f (sprite-vertex-stride-bytes) (sprite-vertex-field-offset 'uv))
+  (gl-enable-vertex-attrib-array 1)
+  (set! sprite-ebo (buffer-new))
   (gl-bind-buffer gl-element-array-buffer sprite-ebo)
   (buffer-upload gl-element-array-buffer sprite-indices gl-static-draw)
   (gl-bind-vertex-array 0)
@@ -295,9 +349,9 @@
   (program-use sprite-program)
   (gl-active-texture gl-texture0)
   (gl-bind-texture gl-texture-2d (sprite-sheet-id sheet))
-  (set-sprite-u-atlas! 0)
-  (set-sprite-u-cols! (exact->inexact (sprite-sheet-cols sheet)))
-  (set-sprite-u-rows! (exact->inexact (sprite-sheet-rows sheet))))
+  (uniform-set! sprite-u-atlas-loc 'sampler-2d 0)
+  (uniform-set! sprite-u-cols-loc 'float (exact->inexact (sprite-sheet-cols sheet)))
+  (uniform-set! sprite-u-rows-loc 'float (exact->inexact (sprite-sheet-rows sheet))))
 
 ;; ------------------------------------------------------------
 ;; 五、窗口 / 相机 / 场景
@@ -351,9 +405,9 @@
   (gl-enable gl-depth-test)
   (program-use ground-program)
   (gl-bind-vertex-array ground-vao)
-  (set-ground-u-view! view)
-  (set-ground-u-proj! proj)
-  (set-ground-u-bg-color! bg-color)
+  (uniform-set! ground-u-view-loc 'mat-4 view)
+  (uniform-set! ground-u-proj-loc 'mat-4 proj)
+  (uniform-set! ground-u-bg-color-loc 'vec-3 bg-color)
   (gl-draw-arrays gl-triangles 0 6)
 
   ;; ---- 3. 茶壶：写深度 ----
@@ -363,15 +417,15 @@
     (mat4-mul (m-translate (vec-3 0.0 0.03 0.0))
               (mat4-mul (m-scale (vec-3 0.85 0.85 0.85))
                         (m-rotate-y (* 0.18 t)))))
-  (set-teapot-u-model! teapot-model)
-  (set-teapot-u-view! view)
-  (set-teapot-u-proj! proj)
-  (set-teapot-u-normal-matrix! (m-normal-matrix teapot-model))
-  (set-teapot-u-base-color! teapot-base)
-  (set-teapot-u-rim-color! teapot-rim)
-  (set-teapot-u-light-pos! (vec-3 4.0 7.0 5.0))
-  (set-teapot-u-light-color! (vec-3 1.0 0.96 0.88))
-  (set-teapot-u-view-pos! eye)
+  (uniform-set! teapot-u-model-loc 'mat-4 teapot-model)
+  (uniform-set! teapot-u-view-loc 'mat-4 view)
+  (uniform-set! teapot-u-proj-loc 'mat-4 proj)
+  (uniform-set! teapot-u-normal-matrix-loc 'mat-3 (m-normal-matrix teapot-model))
+  (uniform-set! teapot-u-base-color-loc 'vec-3 teapot-base)
+  (uniform-set! teapot-u-rim-color-loc 'vec-3 teapot-rim)
+  (uniform-set! teapot-u-light-pos-loc 'vec-3 (vec-3 4.0 7.0 5.0))
+  (uniform-set! teapot-u-light-color-loc 'vec-3 (vec-3 1.0 0.96 0.88))
+  (uniform-set! teapot-u-view-pos-loc 'vec-3 eye)
   (gl-draw-elements gl-triangles teapot-index-count gl-unsigned-short 0)
 
   ;; ---- 4. 精灵：深度测试开、深度写入关、加法混合 ----
@@ -379,9 +433,9 @@
   (gl-bind-vertex-array sprite-vao)
   (gl-active-texture gl-texture0)
   (gl-bind-texture gl-texture-2d (sprite-sheet-id sheet))
-  (set-sprite-u-view! view)
-  (set-sprite-u-proj! proj)
-  (set-sprite-u-atlas! 0)
+  (uniform-set! sprite-u-view-loc 'mat-4 view)
+  (uniform-set! sprite-u-proj-loc 'mat-4 proj)
+  (uniform-set! sprite-u-atlas-loc 'sampler-2d 0)
 
   (gl-enable gl-blend)
   (gl-blend-func gl-src-alpha gl-one)     ; 加法混合：光叠加，不会把背景压暗
@@ -403,14 +457,40 @@
              (vec-4 (* (vx up) size) (* (vy up) size) (* (vz up) size) 0.0)
              (vec-4 (vx normal) (vy normal) (vz normal) 0.0)
              (vec-4 (vx center) (vy center) (vz center) 1.0)))
-    (set-sprite-u-model! model)
-    (set-sprite-u-frame! (exact->inexact frame))
-    (set-sprite-u-tint! tint)
+    (uniform-set! sprite-u-model-loc 'mat-4 model)
+    (uniform-set! sprite-u-frame-loc 'float (exact->inexact frame))
+    (uniform-set! sprite-u-tint-loc 'vec-3 tint)
     (gl-draw-elements gl-triangles 6 gl-unsigned-short 0))
 
   (gl-depth-mask #t)
   (gl-disable gl-blend)
   (gl-bind-vertex-array 0))
+
+;; ------------------------------------------------------------
+;; 关窗前释放：这些句柄归调用方，不删就一直占着显存
+;; ------------------------------------------------------------
+;; 顺序：先解绑当前状态，再删引用方（VAO）→ 缓冲 → 纹理 → program。
+;; 初始值是 0：0 不是有效对象，GL 的 delete 会忽略它（init 没跑完也能安全关窗）。
+(define (shutdown)
+  (gl-bind-vertex-array 0)      ; 别删正在用的
+  (gl-use-program 0)
+  (vertex-array-delete sky-vao)
+  (vertex-array-delete ground-vao)
+  (vertex-array-delete teapot-vao)
+  (vertex-array-delete sprite-vao)
+  (buffer-delete sky-vbo)
+  (buffer-delete ground-vbo)
+  (buffer-delete teapot-vbo)
+  (buffer-delete teapot-ebo)
+  (buffer-delete sprite-vbo)
+  (buffer-delete sprite-ebo)
+  ;; 精灵图纹理：load-sprite-sheet 里创建的；init 没跑完时 sheet 还是 #f
+  (when sheet
+    (texture-delete (sprite-sheet-id sheet)))
+  (program-delete sky-program)
+  (program-delete ground-program)
+  (program-delete teapot-program)
+  (program-delete sprite-program))
 
 (define-values (frame canvas)
   (make-window #:title "15 精灵图与 HD 3D 场景"
@@ -420,7 +500,7 @@
                #:init init
                #:draw draw
                #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
-               #:on-close release-all!))
+               #:on-close shutdown))
 (send frame show #t)
 
 (define timer

@@ -82,7 +82,7 @@ f 3//3 2//2 4//4
 
       <p>渲染用的顶点布局是：</p>
 
-      <pre><code class="lang-racket">(glsl-struct model-vertex (vec-3 pos) (vec-3 normal))</code></pre>
+      <pre><code class="lang-racket">(shader-struct model-vertex (vec-3 pos) (vec-3 normal))</code></pre>
 
       <p>把 <code>obj-vertex</code> 逐个转成 <code>model-vertex</code>，铺平成一条 f32vector，再上传 VBO；索引表上传 EBO：</p>
 
@@ -96,7 +96,7 @@ f 3//3 2//2 4//4
 (define model-indices
   (apply u16-array (vector->list (obj-mesh-indices mesh))))</code></pre>
 
-      <p>属性布局仍然交给 <code>glsl-vertex-layout!</code>：shader 的 <code>in</code> 名和 <code>model-vertex</code> 字段名都是 <code>pos</code> / <code>normal</code>，编译期自动对齐 slot、stride、offset。</p>
+      <p>属性布局手写：<code>location</code> / 分量数 / 类型照 shader 的 <code>layout(location N) in ...</code> 抄，步长与偏移取自 <code>model-vertex</code> 字段表（24 字节；pos 0、normal 12）。</p>
 
       <p>绘制时用 09 课已经熟悉的矩阵链路：</p>
 
@@ -104,10 +104,10 @@ f 3//3 2//2 4//4
   (mat4-mul (m-scale (vec-3 0.8 0.8 0.8))
             (m-rotate-y t)))
 
-(set-model-u-model! model-m)
-(set-model-u-view! view)
-(set-model-u-proj! proj)
-(set-model-u-normal-matrix! (m-normal-matrix model-m))</code></pre>
+(uniform-set! model-u-model-loc 'mat-4 model-m)
+(uniform-set! model-u-view-loc 'mat-4 view)
+(uniform-set! model-u-proj-loc 'mat-4 proj)
+(uniform-set! model-u-normal-matrix-loc 'mat-3 (m-normal-matrix model-m))</code></pre>
 
       <h2 id="s14-4">14.4 本课的着色器</h2>
 
@@ -158,7 +158,6 @@ f 3//3 2//2 4//4
          racket/gui                     ; timer%
          racket/math                    ; degrees-&gt;radians
          "../lib/window.rkt"
-         "../lib/gpu.rkt"
          "../lib/matrix.rkt"
          "../lib/obj.rkt")
 
@@ -169,7 +168,7 @@ f 3//3 2//2 4//4
                                    "assets/models/teapot.obj")))
 
 ;; 渲染用顶点布局：位置 + 法线。
-;; 字段名必须和 shader 的 in 名一致，glsl-vertex-layout! 才能自动对齐。
+;; 字段名只是 CPU 侧的标签；和 shader 的 in 对上靠 init 里手写的 location。
 ;; （loader 仍然支持 UV；这个 teapot 文件没有 vt，所以这里不需要。）
 (shader-struct model-vertex (vec-3 pos) (vec-3 normal))
 
@@ -227,28 +226,50 @@ f 3//3 2//2 4//4
 ;; ------------------------------------------------------------
 ;; 三、GL 对象
 ;; ------------------------------------------------------------
-(define model-program #f)
-(define vao #f)
-
-(glsl-uniform-setter! model-program model-vert model-frag #:prefix "model-")
+(define model-program 0)
+;; uniform 位置：链接后查一次（名字用 GLSL 里的写法），之后每帧直接 uniform-set!
+(define model-u-model-loc 0)
+(define model-u-view-loc 0)
+(define model-u-proj-loc 0)
+(define model-u-normal-matrix-loc 0)
+(define model-u-object-color-loc 0)
+(define model-u-light-pos-loc 0)
+(define model-u-light-color-loc 0)
+(define model-u-view-pos-loc 0)
+(define vao 0)
+;; 这些缓冲句柄也放在顶层：关窗时 shutdown 要能拿到（0 = 还没创建）
+(define vbo 0)
+(define ebo 0)
 
 (define (init)
-  (set! model-program (own! 'program (build-program (gl-vertex-shader model-vert)
-                                                    (gl-fragment-shader model-frag))))
+  (set! model-program (build-program (gl-vertex-shader model-vert)
+                                     (gl-fragment-shader model-frag)))
+  (set! model-u-model-loc (uniform-location model-program "u_model"))
+  (set! model-u-view-loc (uniform-location model-program "u_view"))
+  (set! model-u-proj-loc (uniform-location model-program "u_proj"))
+  (set! model-u-normal-matrix-loc (uniform-location model-program "u_normal_matrix"))
+  (set! model-u-object-color-loc (uniform-location model-program "u_object_color"))
+  (set! model-u-light-pos-loc (uniform-location model-program "u_light_pos"))
+  (set! model-u-light-color-loc (uniform-location model-program "u_light_color"))
+  (set! model-u-view-pos-loc (uniform-location model-program "u_view_pos"))
 
   (gl-enable gl-depth-test)
 
   ;; ---- 模型 VAO / VBO / EBO ----
-  (set! vao (own! 'vertex-array (vertex-array-new)))
+  (set! vao (vertex-array-new))
   (gl-bind-vertex-array vao)
 
-  (define vbo (own! 'buffer (buffer-new)))
+  (set! vbo (buffer-new))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer model-data gl-static-draw)
   ;; shader 的 in 名 = model-vertex 字段名：pos / normal / uv
-  (glsl-vertex-layout! model-vert model-vertex)
+  ;; 顶点属性：手写 location / 分量 / 类型 / 步长 / 偏移（pos 0、normal 12）
+  (gl-vertex-attrib-pointer 0 3 gl-float #f (model-vertex-stride-bytes) (model-vertex-field-offset 'pos))
+  (gl-enable-vertex-attrib-array 0)
+  (gl-vertex-attrib-pointer 1 3 gl-float #f (model-vertex-stride-bytes) (model-vertex-field-offset 'normal))
+  (gl-enable-vertex-attrib-array 1)
 
-  (define ebo (own! 'buffer (buffer-new)))
+  (set! ebo (buffer-new))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer model-indices gl-static-draw)
 
@@ -278,17 +299,30 @@ f 3//3 2//2 4//4
   (program-use model-program)
   (gl-bind-vertex-array vao)
 
-  (set-model-u-model! model-m)
-  (set-model-u-view! view)
-  (set-model-u-proj! proj)
-  (set-model-u-normal-matrix! (m-normal-matrix model-m))
-  (set-model-u-object-color! (vec-3 0.82 0.55 0.35))
-  (set-model-u-light-pos! (vec-3 4.0 5.0 4.0))
-  (set-model-u-light-color! (vec-3 1.0 1.0 1.0))
-  (set-model-u-view-pos! eye)
+  (uniform-set! model-u-model-loc 'mat-4 model-m)
+  (uniform-set! model-u-view-loc 'mat-4 view)
+  (uniform-set! model-u-proj-loc 'mat-4 proj)
+  (uniform-set! model-u-normal-matrix-loc 'mat-3 (m-normal-matrix model-m))
+  (uniform-set! model-u-object-color-loc 'vec-3 (vec-3 0.82 0.55 0.35))
+  (uniform-set! model-u-light-pos-loc 'vec-3 (vec-3 4.0 5.0 4.0))
+  (uniform-set! model-u-light-color-loc 'vec-3 (vec-3 1.0 1.0 1.0))
+  (uniform-set! model-u-view-pos-loc 'vec-3 eye)
 
   (gl-draw-elements gl-triangles model-index-count gl-unsigned-short 0)
   (gl-bind-vertex-array 0))
+
+;; ------------------------------------------------------------
+;; 关窗前释放：这些句柄归调用方，不删就一直占着显存
+;; ------------------------------------------------------------
+;; 顺序：先解绑当前状态，再删引用方（VAO）→ 缓冲 → 纹理 → program。
+;; 初始值是 0：0 不是有效对象，GL 的 delete 会忽略它（init 没跑完也能安全关窗）。
+(define (shutdown)
+  (gl-bind-vertex-array 0)      ; 别删正在用的
+  (gl-use-program 0)
+  (vertex-array-delete vao)
+  (buffer-delete vbo)
+  (buffer-delete ebo)
+  (program-delete model-program))
 
 (define-values (frame canvas)
   (make-window #:title "14 模型加载"
@@ -297,7 +331,7 @@ f 3//3 2//2 4//4
                #:init init
                #:draw draw
                #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
-               #:on-close release-all!))
+               #:on-close shutdown))
 (send frame show #t)
 
 ;; 模型在转，需要定时器不断请求重绘
@@ -308,15 +342,15 @@ f 3//3 2//2 4//4
 
 
       <div class="note">
-        <p><b>GPU 资源</b>本节代码里每个 <code>*-new</code> / <code>build-program</code> 都用 <code>own!</code> 登记，关窗时 <code>release-all!</code> 统一删除。为什么这些句柄 GC 管不了，见 <a href="../02-hello-triangle/index.html#s2-9">02 · 2.9</a>。</p>
+        <p><b>GPU 资源</b>本节创建的 program / VAO / VBO（以及纹理）都在文件末尾的 <code>shutdown</code> 里用 <code>program-delete</code> / <code>vertex-array-delete</code> / <code>buffer-delete</code> 显式删除，由 <code>#:on-close shutdown</code> 在关窗时触发。为什么这些句柄 GC 管不了、为什么必须手动删，见 <a href="../02-hello-triangle/index.html#s2-9">02 · 2.9</a>。</p>
       </div>
 
 <h2 id="s14-exercise">14.5 试试看</h2>
 
       <ol class="exercise">
-        <li><b>非等比缩放</b>：把 <code>m-scale</code> 改成 <code>(vec-3 1.6 0.7 1.0)</code>，观察明暗和高光是否被拉歪；再把 <code>set-model-u-normal-matrix!</code> 的参数换成“只取 model 左上 3×3、不做逆转置”的 naive 版本（09 课「试试看」第 ④ 条有完整写法），对比法线错误时画面怎么变。</li>
+        <li><b>非等比缩放</b>：把 <code>m-scale</code> 改成 <code>(vec-3 1.6 0.7 1.0)</code>，观察明暗和高光是否被拉歪；再把 <code>uniform-set! model-u-normal-matrix-loc</code> 的值换成“只取 model 左上 3×3、不做逆转置”的 naive 版本（09 课「试试看」第 ④ 条有完整写法），对比法线错误时画面怎么变。</li>
         <li><b>换材质色和灯位</b>：改 <code>u-object-color</code>、<code>u-light-pos</code>、<code>eye</code>，确认颜色乘法、点光方向和相机位置各自影响什么。</li>
-        <li><b>画两个茶壶</b>：在 <code>draw</code> 里把 <code>set-model-u-model!</code> + <code>set-model-u-normal-matrix!</code> + <code>gl-draw-elements</code> 这段再写一遍，第二次用 <code>(mat4-mul (m-translate (vec-3 2.5 0 0)) model-m)</code>。每个物体都要重新传 model 和 normal matrix，但 VBO/EBO 可以共用。</li>
+        <li><b>画两个茶壶</b>：在 <code>draw</code> 里把 <code>uniform-set! model-u-model-loc</code> + <code>uniform-set! model-u-normal-matrix-loc</code> + <code>gl-draw-elements</code> 这段再写一遍，第二次用 <code>(mat4-mul (m-translate (vec-3 2.5 0 0)) model-m)</code>。每个物体都要重新传 model 和 normal matrix，但 VBO/EBO 可以共用。</li>
         <li><b>换图元</b>：把 <code>gl-draw-elements gl-triangles</code> 换成 <code>gl-lines</code> 或 <code>gl-points</code>。索引表不变，看到的是三角形边/顶点而不是实心面，正好检查网格拓扑。</li>
         <li><b>没有法线的模型</b>：复制一份 <code>teapot.obj</code>，删掉所有 <code>vn</code> 行（或找一个不带法线的 OBJ）再加载。loader 会给默认零法线，光照会大面积变黑；这能说明为什么本课要把法线一起上传。</li>
       </ol>

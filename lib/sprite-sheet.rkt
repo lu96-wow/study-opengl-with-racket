@@ -26,8 +26,7 @@
 ;; 必须在 GL 上下文里调用 load-sprite-sheet（例如 make-window 的 #:init）。
 
 (require racket/class
-         racket/draw
-         "gpu.rkt")   ; own!：纹理句柄要登记，否则关闭时不会释放
+         racket/draw)
 
 (provide sprite-sheet sprite-sheet?
          sprite-sheet-id sprite-sheet-width sprite-sheet-height
@@ -79,9 +78,8 @@
   (send bmp get-argb-pixels 0 0 w h argb)
   (define rgba (flip-rows (argb->rgba argb w h) w h))
 
-  ;; 登记纹理句柄（lib/gpu.rkt）：sprite-sheet 里只留 id 和尺寸，
-  ;; 释放时机交给窗口关闭时的 release-all!。
-  (define id (own! 'texture (texture-new)))
+  ;; 纹理句柄归调用方：用完 (texture-delete (sprite-sheet-id sheet))（见 15 课的 shutdown）。
+  (define id (texture-new))
   (gl-bind-texture gl-texture-2d id)
 
   ;; 每个像素 4 字节；宽度不是 4 的倍数时行首也要对齐。

@@ -157,10 +157,11 @@ API = 数据搬运 + 状态设置 + 计算启动
 
 约定：
 
-- **每课都登记、每课都释放**：分配时 `(own! 'buffer (buffer-new))`，窗口关闭时 `#:on-close release-all!` 在上下文还活着的时候排空登记表（`lib/gpu.rkt`）。
-- `release-all!` 就是「终结器只入队、GL 线程排空」这条正确做法的显式版：时机确定、顺序固定，不依赖 GC。
+- **每课都手动删、不用封装**：句柄提到顶层（`(define vbo 0)`），关窗前在 `shutdown` 里逐个 `program-delete` / `vertex-array-delete` / `buffer-delete` / `texture-delete`，由 `make-window` 的 `#:on-close` 在上下文还活着时触发。
+- 教程不提供 `own!` 之类的登记表：新手要能看见「谁创建、谁删除」的对应关系。等对象多到几十上百个，再考虑登记表（`racket-shader-opengl` DESIGN.md §3.1 的入队思路），那是优化而不是入门必需。
 - **Racket 值不用管**：`vec-array` / `vec-3` / shader-struct 都是普通值，上传是复制（`glBufferData` 语义），复制完就是 GC 的事。
-- 手写 raw 的对照见 `compare/raw-triangle.rkt`：那里用显式 `glDeleteProgram` / `glDeleteVertexArrays` / `glDeleteBuffers` 说明同一件事。
+- 初始值用 `0`：GL 规定 delete 忽略名字 0，所以 `init` 半途失败时关窗也安全。
+- 手写 raw 的对照见 `compare/raw-triangle.rkt`：用显式 `glDeleteProgram` / `glDeleteVertexArrays` / `glDeleteBuffers`，与各课的 `shutdown` 是同一件事。
 
 判据一句话：**返回值是指向 GPU 侧分配的整数句柄 → 要删；是 Racket 值 → 不用管。**
 

@@ -76,7 +76,7 @@
 (send bmp get-argb-pixels 0 0 w h argb)
 (define rgba (flip-rows (argb->rgba argb w h) w h))
 
-(define id (own! 'texture (texture-new)))
+(set! id (texture-new))
 (gl-bind-texture gl-texture-2d id)
 (gl-pixel-store-i gl-unpack-alignment 1)
 (gl-tex-parameter-i gl-texture-2d gl-texture-wrap-s gl-clamp-to-edge)
@@ -213,7 +213,7 @@ normal  = cross(right, up)        ; 指向相机</code></pre>
         <li>把 <code>u-frame</code> 的计算改成 <code>(modulo (- (inexact->exact (floor (* t 12.0))) (* i 3)) ...)</code>：动画方向反过来，验证帧号确实只是一个普通 uniform。</li>
       </ol>
       <div class="note">
-        <p><b>GPU 资源</b>本节代码里每个 <code>*-new</code> / <code>build-program</code> 都用 <code>own!</code> 登记，关窗时 <code>release-all!</code> 统一删除。为什么这些句柄 GC 管不了，见 <a href="../02-hello-triangle/index.html#s2-9">02 · 2.9</a>。</p>
+        <p><b>GPU 资源</b>本节创建的 program / VAO / VBO（以及纹理）都在文件末尾的 <code>shutdown</code> 里用 <code>program-delete</code> / <code>vertex-array-delete</code> / <code>buffer-delete</code> 显式删除，由 <code>#:on-close shutdown</code> 在关窗时触发。为什么这些句柄 GC 管不了、为什么必须手动删，见 <a href="../02-hello-triangle/index.html#s2-9">02 · 2.9</a>。</p>
       </div>
 
 

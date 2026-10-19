@@ -17,7 +17,6 @@
 (require racket/class
          racket/math                     ; degrees->radians
          "../lib/window.rkt"
-         "../lib/gpu.rkt"
          "../lib/matrix.rkt")            ; m-look-at / m-perspective / m-translate / m-scale
 
 ;; ------------------------------------------------------------
@@ -123,9 +122,9 @@
 (define object-color (vec-3 1.0 0.5 0.31))      ; 物体的本色：橙
 (define light-color (vec-3 1.0 1.0 1.0))        ; 光的颜色：白
 
-(define object-program #f)
-(define lamp-program #f)
-(define vao #f)
+(define object-program 0)
+(define lamp-program 0)
+(define vao 0)
 ;; uniform 位置是"每个 program 各有一份"的：两个 program 里都叫 u-model 的 uniform
 ;; 在 GPU 上是两个槽位，位置值不保证相同，所以两套各存一套、不混用。
 (define obj-u-model #f)
@@ -137,13 +136,16 @@
 (define lamp-u-view #f)
 (define lamp-u-proj #f)
 (define lamp-u-light-color #f)
+;; 这些缓冲句柄也放在顶层：关窗时 shutdown 要能拿到（0 = 还没创建）
+(define vbo 0)
+(define ebo 0)
 
 (define (init)
   ;; 同一份顶点源码，配两份不同的片元，链接出两个 program。
-  (set! object-program (own! 'program (build-program (gl-vertex-shader vert-src)
-                                                     (gl-fragment-shader object-frag-src))))
-  (set! lamp-program (own! 'program (build-program (gl-vertex-shader vert-src)
-                                                   (gl-fragment-shader lamp-frag-src))))
+  (set! object-program (build-program (gl-vertex-shader vert-src)
+                                      (gl-fragment-shader object-frag-src)))
+  (set! lamp-program (build-program (gl-vertex-shader vert-src)
+                                    (gl-fragment-shader lamp-frag-src)))
 
   ;; 画立体的东西就得开深度测试，否则后画的片元盖住先画的、与远近无关（06 课）。
   (gl-enable gl-depth-test)
@@ -151,17 +153,17 @@
   ;; ---- VAO / VBO / EBO ----
   ;; VAO 里只开 0 号槽：位置。两个 program 的顶点着色器都只声明 layout 0，
   ;; 所以这一个 VAO 喂给谁都对得上。
-  (set! vao (own! 'vertex-array (vertex-array-new)))
+  (set! vao (vertex-array-new))
   (gl-bind-vertex-array vao)
 
-  (define vbo (own! 'buffer (buffer-new)))
+  (set! vbo (buffer-new))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer vertex-data gl-static-draw)
   ;; 只有一个属性：步长就是 vec-3 的大小、偏移 0，都从布局算出来，不写字面量。
   (gl-vertex-attrib-pointer 0 3 gl-float #f (shader-byte-size 'vec-3) 0)
   (gl-enable-vertex-attrib-array 0)
 
-  (define ebo (own! 'buffer (buffer-new)))
+  (set! ebo (buffer-new))
   (gl-bind-buffer gl-element-array-buffer ebo)
   (buffer-upload gl-element-array-buffer indices gl-static-draw)
 
@@ -216,6 +218,20 @@
 
   (gl-bind-vertex-array 0))
 
+;; ------------------------------------------------------------
+;; 关窗前释放：这些句柄归调用方，不删就一直占着显存
+;; ------------------------------------------------------------
+;; 顺序：先解绑当前状态，再删引用方（VAO）→ 缓冲 → 纹理 → program。
+;; 初始值是 0：0 不是有效对象，GL 的 delete 会忽略它（init 没跑完也能安全关窗）。
+(define (shutdown)
+  (gl-bind-vertex-array 0)      ; 别删正在用的
+  (gl-use-program 0)
+  (vertex-array-delete vao)
+  (buffer-delete vbo)
+  (buffer-delete ebo)
+  (program-delete object-program)
+  (program-delete lamp-program))
+
 (define-values (frame canvas)
   (make-window #:title "08 颜色"
                #:width win-w
@@ -224,7 +240,7 @@
                #:draw draw
                ;; 窗口尺寸变化、viewport 重设之后被调用，参数是新的客户区宽高。
                #:on-size (lambda (cw ch) (set! aspect (/ cw ch)))
-               #:on-close release-all!))
+               #:on-close shutdown))
 (send frame show #t)
 
 ;; 本课没有 timer：场景是静的、没有东西在动，就不必每 16ms 请求一次重绘（接 01 课）。
