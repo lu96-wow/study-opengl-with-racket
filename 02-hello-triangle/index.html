@@ -89,6 +89,25 @@
 (gl-draw-arrays gl-triangles 0 3)</code></pre>
       </div>
 
+      <p>上面的骨架省略了检查。真实代码在编译、链接之后都要问 GL「成功了没有、失败为什么」，用到的是这一组查询：</p>
+
+      <table class="spec">
+        <thead><tr><th>函数</th><th>查什么</th><th>参数</th><th>返回</th></tr></thead>
+        <tbody>
+          <tr><td><code>gl-get-shader-iv</code></td><td>shader 的整数属性：编译状态、info log 长度…</td><td>shader 对象、枚举（<code>gl-compile-status</code>、<code>gl-info-log-length</code>）</td><td>整数：编译成功非 0</td></tr>
+          <tr><td><code>gl-get-shader-info-log</code></td><td>编译器的报错/警告文本</td><td>shader、缓冲长度</td><td>两个值：实际长度 + 字符串</td></tr>
+          <tr><td><code>gl-get-program-iv</code></td><td>program 的整数属性：链接状态、info log 长度、active uniform 数…</td><td>program、枚举（<code>gl-link-status</code>、<code>gl-info-log-length</code>、<code>gl-active-uniforms</code>）</td><td>整数：链接成功非 0</td></tr>
+          <tr><td><code>gl-get-program-info-log</code></td><td>链接器/驱动的报错文本</td><td>program、缓冲长度</td><td>长度 + 字符串</td></tr>
+          <tr><td><code>gl-get-string</code></td><td>驱动 / 硬件信息</td><td>枚举（<code>var-version</code>、<code>gl-vendor</code>、<code>gl-shading-language-version</code>）</td><td>字符串</td></tr>
+          <tr><td><code>gl-get-uniform-location</code></td><td>uniform 在 program 里的位置（03.4 用）</td><td>program、GLSL 名</td><td>整数；不存在时 <b>-1</b></td></tr>
+          <tr><td><code>gl-get-active-uniform</code></td><td>第 i 个 active uniform 的名字 / 类型 / 数组长度（03.4 用）</td><td>program、索引、名字缓冲大小</td><td>四个值：名字长度、数组大小、类型枚举、名字</td></tr>
+        </tbody>
+      </table>
+
+      <div class="note key">
+        <p><b>查询 API 的规律</b>它们不改状态、不绘制，只读。命名是 <code>gl-get-&lt;对象&gt;-&lt;要什么&gt;</code>：<code>-iv</code> 表示「取一个整数」，<code>-info-log</code> 取文本；参数几乎都是「对象 id + 一个枚举，说明你想问哪一项」；取字符串的那几个返回「长度 + 内容」两个值。</p>
+      </div>
+
       <p>完整带状态检查、info log、失败清理的 raw 版本就是 <a class="filelink" href="../code.html?f=compare/raw-triangle.rkt">compare/raw-triangle.rkt</a>。</p>
 
       <div class="note">
@@ -111,7 +130,7 @@
       </table>
 
       <div class="note key">
-        <p><b>阅读顺序</b>先理解 raw：资源的 id、绑定、状态检查、VAO 记录什么。再把这些重复样板交给便利层。本课先用 raw 流程的对照文件建立概念，后面代码再用便利层；09.4 还会把「属性布局」和「uniform 位置」的手写方式再展开一次。便利层不改变 OpenGL 语义，也不取代 raw 调用。</p>
+        <p><b>阅读顺序</b>先理解 raw：资源的 id、绑定、状态检查、VAO 记录什么。再把这些重复样板交给便利层。本课先用 raw 流程的对照文件建立概念，后面代码再用便利层；09.4 会把 gl-vertex-attrib-pointer 的六个参数和 uniform 位置的查法逐条展开。便利层不改变 OpenGL 语义，也不取代 raw 调用。</p>
       </div>
 
       <h2 id="s2-1">2.1 顶点数据</h2>

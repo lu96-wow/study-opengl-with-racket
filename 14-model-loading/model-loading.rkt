@@ -39,7 +39,7 @@
                                    "assets/models/teapot.obj")))
 
 ;; 渲染用顶点布局：位置 + 法线。
-;; 字段名只是 CPU 侧的标签；和 shader 的 in 对上靠 init 里手写的 location。
+;; 字段名是 CPU 侧的标签；和 shader 的 in 对上靠 init 里 gl-vertex-attrib-pointer 的 location。
 ;; （loader 仍然支持 UV；这个 teapot 文件没有 vt，所以这里不需要。）
 (shader-struct model-vertex (vec-3 pos) (vec-3 normal))
 
@@ -134,7 +134,10 @@
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer model-data gl-static-draw)
   ;; shader 的 in 名 = model-vertex 字段名：pos / normal / uv
-  ;; 顶点属性：手写 location / 分量 / 类型 / 步长 / 偏移（pos 0、normal 12）
+  ;; gl-vertex-attrib-pointer 的参数依次是：location、分量数、分量类型、
+  ;; normalized、步长（每顶点字节数）、偏移（属性在顶点内的字节位置）。
+  ;; pos：location 0、3 个 float、偏移 0；normal：location 1、3 个 float、偏移 12；
+  ;; 步长 24 字节（一个顶点 6 个 float）。属性默认关闭，要用 gl-enable 打开。
   (gl-vertex-attrib-pointer 0 3 gl-float #f (model-vertex-stride-bytes) (model-vertex-field-offset 'pos))
   (gl-enable-vertex-attrib-array 0)
   (gl-vertex-attrib-pointer 1 3 gl-float #f (model-vertex-stride-bytes) (model-vertex-field-offset 'normal))

@@ -295,7 +295,7 @@
   (set! sky-vbo (buffer-new))
   (gl-bind-buffer gl-array-buffer sky-vbo)
   (buffer-upload gl-array-buffer sky-data gl-static-draw)
-  ;; 顶点属性：手写（sky 只有 pos，vec2）
+  ;; pos：location 0、2 个 float、步长 8 字节；属性默认关闭，要 gl-enable 打开。
   (gl-vertex-attrib-pointer 0 2 gl-float #f (sky-vertex-stride-bytes) (sky-vertex-field-offset 'pos))
   (gl-enable-vertex-attrib-array 0)
   (gl-bind-vertex-array 0)
@@ -306,7 +306,7 @@
   (set! ground-vbo (buffer-new))
   (gl-bind-buffer gl-array-buffer ground-vbo)
   (buffer-upload gl-array-buffer ground-data gl-static-draw)
-  ;; 顶点属性：手写（ground 只有 pos，vec3）
+  ;; pos：location 0、3 个 float、步长 12 字节；属性默认关闭，要 gl-enable 打开。
   (gl-vertex-attrib-pointer 0 3 gl-float #f (ground-vertex-stride-bytes) (ground-vertex-field-offset 'pos))
   (gl-enable-vertex-attrib-array 0)
   (gl-bind-vertex-array 0)
@@ -317,7 +317,7 @@
   (set! teapot-vbo (buffer-new))
   (gl-bind-buffer gl-array-buffer teapot-vbo)
   (buffer-upload gl-array-buffer teapot-data gl-static-draw)
-  ;; 顶点属性：手写（teapot：pos 0、normal 12）
+  ;; pos：location 0、3 个 float、偏移 0；normal：location 1、3 个 float、偏移 12；步长 24。
   (gl-vertex-attrib-pointer 0 3 gl-float #f (teapot-vertex-stride-bytes) (teapot-vertex-field-offset 'pos))
   (gl-enable-vertex-attrib-array 0)
   (gl-vertex-attrib-pointer 1 3 gl-float #f (teapot-vertex-stride-bytes) (teapot-vertex-field-offset 'normal))
@@ -333,7 +333,7 @@
   (set! sprite-vbo (buffer-new))
   (gl-bind-buffer gl-array-buffer sprite-vbo)
   (buffer-upload gl-array-buffer sprite-quad gl-static-draw)
-  ;; 顶点属性：手写（sprite：pos 0、uv 12）
+  ;; pos：location 0、3 个 float、偏移 0；uv：location 1、2 个 float、偏移 12；步长 20。
   (gl-vertex-attrib-pointer 0 3 gl-float #f (sprite-vertex-stride-bytes) (sprite-vertex-field-offset 'pos))
   (gl-enable-vertex-attrib-array 0)
   (gl-vertex-attrib-pointer 1 2 gl-float #f (sprite-vertex-stride-bytes) (sprite-vertex-field-offset 'uv))

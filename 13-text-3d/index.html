@@ -325,7 +325,9 @@ rlEnd();</code></pre>
   (set! text-vbo (buffer-new))
   (gl-bind-buffer gl-array-buffer text-vbo)
   (buffer-upload gl-array-buffer text-quad-data gl-static-draw)
-  ;; 顶点属性：手写 location / 分量 / 类型 / 步长 / 偏移（pos 0、uv 12）
+  ;; gl-vertex-attrib-pointer 的参数依次是：location、分量数、分量类型、
+  ;; normalized、步长、偏移。pos：location 0、3 个 float、偏移 0；
+  ;; uv：location 1、2 个 float、偏移 12；步长 20 字节（一个顶点 5 个 float）。
   (gl-vertex-attrib-pointer 0 3 gl-float #f (text-quad-stride-bytes) (text-quad-field-offset 'pos))
   (gl-enable-vertex-attrib-array 0)
   (gl-vertex-attrib-pointer 1 2 gl-float #f (text-quad-stride-bytes) (text-quad-field-offset 'uv))

@@ -204,7 +204,10 @@
   (set! vbo (buffer-new))
   (gl-bind-buffer gl-array-buffer vbo)
   (buffer-upload gl-array-buffer cube-data gl-static-draw)
-  ;; 顶点属性：手写 location / 分量 / 类型 / 步长 / 偏移（pos 0、normal 12）
+  ;; gl-vertex-attrib-pointer 的参数依次是：location、分量数、分量类型、
+  ;; normalized、步长（每顶点字节数）、偏移（属性在顶点内的字节位置）。
+  ;; pos：location 0、3 个 float、偏移 0；normal：location 1、3 个 float、偏移 12；
+  ;; 步长 24 字节（一个顶点 6 个 float）。属性默认关闭，要用 gl-enable 打开。
   (gl-vertex-attrib-pointer 0 3 gl-float #f (vertex-stride-bytes) (vertex-field-offset 'pos))
   (gl-enable-vertex-attrib-array 0)
   (gl-vertex-attrib-pointer 1 3 gl-float #f (vertex-stride-bytes) (vertex-field-offset 'normal))

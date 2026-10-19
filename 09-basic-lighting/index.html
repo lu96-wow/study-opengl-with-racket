@@ -369,6 +369,21 @@
         <pre><code class="lang-racket">(shader-struct vertex (vec-3 pos) (vec-3 normal))</code></pre>
       </div>
 
+      <p><code>shader-struct</code> 除生成一个 Racket struct，还生成一组按布局查询的函数：</p>
+
+      <table class="spec">
+        <thead><tr><th>函数</th><th>查什么</th><th>返回</th></tr></thead>
+        <tbody>
+          <tr><td><code>vertex-fields</code></td><td>字段表（编译期）：字段名 + 类型</td><td><code>((pos vec3) (normal vec3))</code></td></tr>
+          <tr><td><code>vertex-stride-bytes</code></td><td>一条记录占多少字节</td><td>24</td></tr>
+          <tr><td><code>vertex-field-offset</code></td><td>某个字段在记录里的字节偏移</td><td>pos → 0，normal → 12</td></tr>
+          <tr><td><code>vertex-field-components</code></td><td>某个字段有几个分量</td><td>pos → 3</td></tr>
+          <tr><td><code>vertex-&gt;f32vector</code></td><td>把一个记录铺平成连续字节（打包用）</td><td><code>f32vector</code></td></tr>
+        </tbody>
+      </table>
+
+      <p>前缀就是 struct 名：换一个名字（14 课的 <code>model-vertex</code>）就是 <code>model-vertex-stride-bytes</code> 这一套。</p>
+
       <p>于是 24 个顶点就是 24 个 <code>vertex</code> 记录：每个记录既是一对「位置 + 法线」的值，也能铺平成一条连续的 float 缓冲喂给 VBO。绑定属性时不再数字节，直接问字段名：</p>
 
       <div class="code">
@@ -377,8 +392,8 @@
       </div>
 
       <div class="code">
-        <div class="code-title">09-basic-lighting/basic-lighting.rkt：手写属性布局<a class="srclink" href="../code.html?f=09-basic-lighting/basic-lighting.rkt">源码 ↗</a></div>
-        <pre><code class="lang-racket">  ;; location / 分量 / 类型手写；步长与偏移来自字段表
+        <div class="code-title">09-basic-lighting/basic-lighting.rkt：描述 pos 与 normal 两个属性<a class="srclink" href="../code.html?f=09-basic-lighting/basic-lighting.rkt">源码 ↗</a></div>
+        <pre><code class="lang-racket">  ;; 参数依次是 location / 分量数 / 类型 / normalized / 步长 / 偏移
   (gl-vertex-attrib-pointer 0 3 gl-float #f (vertex-stride-bytes) (vertex-field-offset 'pos))
   (gl-enable-vertex-attrib-array 0)
   (gl-vertex-attrib-pointer 1 3 gl-float #f (vertex-stride-bytes) (vertex-field-offset 'normal))
@@ -436,41 +451,52 @@
         <figcaption class="figcaption">图 9-3 一个顶点 24 字节：位置在前 12 字节，法线在后 12 字节</figcaption>
       </figure>
 
-      <h2 id="s9-4">9.4 属性布局与 uniform 位置：手写版</h2>
+      <h2 id="s9-4">9.4 属性布局与 uniform 位置</h2>
 
-      <p>属性布局、uniform 位置都在代码里明写，每一行都能对应到 GLSL 声明：</p>
+      <p>顶点属性用 <code>gl-vertex-attrib-pointer</code> 描述：一个属性槽一次调用，槽默认关闭，再用 <code>gl-enable-vertex-attrib-array</code> 打开。</p>
 
       <div class="code">
-        <div class="code-title">属性布局：location / 分量 / 类型手写，步长与偏移来自字段表</div>
+        <div class="code-title">属性 0（pos）与属性 1（normal）</div>
         <pre><code class="lang-racket">(gl-vertex-attrib-pointer 0 3 gl-float #f (vertex-stride-bytes) (vertex-field-offset 'pos))
 (gl-enable-vertex-attrib-array 0)
 (gl-vertex-attrib-pointer 1 3 gl-float #f (vertex-stride-bytes) (vertex-field-offset 'normal))
 (gl-enable-vertex-attrib-array 1)</code></pre>
       </div>
 
-      <p>前三个参数必须和 GLSL 对上：<code>0</code> / <code>1</code> 是 shader 里 <code>layout(location N)</code> 的 N；<code>3</code> 是 <code>vec3</code> 的分量数；<code>gl-float</code> 是分量类型。后两个数不用手算——<code>shader-struct</code> 的字段表给出步长（24 字节）和每个字段的偏移（pos 0、normal 12）。</p>
+      <p>六个参数依次是：</p>
+
+      <table class="spec">
+        <thead><tr><th>参数</th><th>本例</th><th>含义 / 为什么是这个值</th></tr></thead>
+        <tbody>
+          <tr><td>location</td><td>0 / 1</td><td>属性槽编号，必须等于 shader 里 <code>layout(location N)</code> 的 N；对不上就读错数据</td></tr>
+          <tr><td>size</td><td>3</td><td>属性有几个分量：<code>vec3</code> 是 3，<code>vec2</code> 是 2</td></tr>
+          <tr><td>type</td><td><code>gl-float</code></td><td>每个分量的类型；数据是 float 就用 <code>gl-float</code></td></tr>
+          <tr><td>normalized</td><td><code>#f</code></td><td>浮点数据不需要归一化；整数数据要映射到 0..1 时才传 <code>#t</code></td></tr>
+          <tr><td>stride</td><td>24</td><td>从一个顶点走到下一个要跨多少字节：6 个 float × 4</td></tr>
+          <tr><td>offset</td><td>0 / 12</td><td>属性在顶点内部从第几个字节开始：pos 在 0，normal 在 3 个 float 之后</td></tr>
+        </tbody>
+      </table>
+
+      <p><code>gl-enable-vertex-attrib-array</code> 不能省：属性槽初始是关闭的，关闭时着色器读到常量 <code>(0,0,0,1)</code>，画面坏掉但不报错。</p>
+
+      <p>最后两个参数来自 <code>shader-struct</code> 的字段表：<code>vertex-stride-bytes</code> 是整条记录的字节数，<code>vertex-field-offset</code> 按字段名给出偏移。打包和属性描述读同一份布局，加字段时两边一起变。</p>
+
+      <p>uniform 没有「槽」可写，只能在 program 链接后按名字查位置：</p>
 
       <div class="code">
-        <div class="code-title">uniform 位置：链接后查一次，draw 里直接传值</div>
+        <div class="code-title">uniform 位置：链接后查一次，draw 里直接用</div>
         <pre><code class="lang-racket">;; init 里，build-program 之后
 (set! obj-u-model-loc (uniform-location object-program "u_model"))
-(set! obj-u-view-loc  (uniform-location object-program "u_view"))
-;; ...
 
 ;; draw 里
-(uniform-set! obj-u-model-loc 'mat-4 model)
-(uniform-set! obj-u-normal-matrix-loc 'mat-3 (m-normal-matrix model))</code></pre>
+(uniform-set! obj-u-model-loc 'mat-4 model)</code></pre>
       </div>
 
       <ul>
-        <li><code>uniform-location</code> 用的是 <b>GLSL 里的写法</b>（<code>u_model</code>），不是 Racket 侧的连字符名。</li>
-        <li><code>uniform-set!</code> 的类型符号要跟 shader 声明一致（<code>'mat-4</code> / <code>'vec-3</code> / <code>'sampler-2d</code>），它据此选 <code>gl-uniform-*</code>。</li>
-        <li>位置查一次存起来：每帧只做 <code>gl-uniform-*</code>，不再查驱动。</li>
+        <li><code>uniform-location</code> 的第二个参数是 <b>GLSL 里的名字</b>（<code>u_model</code>），不是 Racket 侧的连字符名；找不到时返回 -1。</li>
+        <li>位置只查一次：链接后布局就固定了，每帧再查只是白跑驱动。</li>
+        <li><code>uniform-set!</code> 的类型符号（<code>'mat-4</code> / <code>'vec-3</code> / <code>'sampler-2d</code>）决定调用哪个 <code>gl-uniform-*</code>，要和 shader 里的声明一致。</li>
       </ul>
-
-      <div class="note key">
-        <p><b>为什么这样分</b><code>location</code> 和分量数写出来能直接对照 GLSL；步长/偏移容易算错，所以交给 <code>shader-struct</code> 的字段表。两边一旦不一致 OpenGL 不会报错，所以注释里把「0 = pos，1 = normal」写清楚，改布局时一起改。</p>
-      </div>
 
       <h2 id="s9-code">完整代码</h2>
 
@@ -519,8 +545,8 @@
 ;; 光照明亮程度必须逐片元算，这两个量就是它要的输入。
 ;;
 ;; (glsl-shader name form ...) 与 (glsl ...) 一样产出 shader，并额外把编译期接口表
-;; 绑为 name-interface（当前没有宏消费它，留着以后用）。裸等价： (define name (glsl ...))，
-;; 接口只能在运行期用 (shader-program-interface name) 取。
+;; 绑为 name-interface：展开成一张编译期表（每个变量的名字、类型、qualifier、layout），
+;; 供想在展开期读接口的代码使用。裸等价： (define name (glsl ...))，接口只能运行期取。
 (glsl-shader vert-src
   (version 330 core)
   (layout (location 0) in vec-3 pos)       ; 属性名 = CPU 侧 shader-struct 字段名
@@ -592,8 +618,8 @@
 ;;
 ;; shader-struct 把 shader 的 struct 镜像到 CPU 侧：字段名、类型、顺序和 shader 里一致。
 ;; 它顺带给出 stride / 字段偏移（vertex-stride-bytes / vertex-field-offset），
-;; 打包和属性描述都用这两个函数，所以不用数字节——但 location、分量数、GL 类型
-;; 仍然是手写的（见下面 init 里的 gl-vertex-attrib-pointer）。
+;; 打包和属性描述都用这两个函数，所以不用数字节；location、分量数、GL 类型
+;; 要自己写（见下面 init 里的 gl-vertex-attrib-pointer）。
 (shader-struct vertex (vec-3 pos) (vec-3 normal))
 
 (define cube-verts
@@ -860,7 +886,7 @@
           </tr>
           <tr>
             <td>shader-struct</td>
-            <td>把 shader 的顶点结构镜像到 CPU 侧：给出字段表、步长与字段偏移（<code>vertex-stride-bytes</code> / <code>vertex-field-offset</code>），打包和 attrib 调用都用它；location / 分量数仍手写</td>
+            <td>把 shader 的顶点结构镜像到 CPU 侧：给出字段表、步长与字段偏移（<code>vertex-stride-bytes</code> / <code>vertex-field-offset</code>），打包和 attrib 调用都用它；location / 分量数要自己写</td>
           </tr>
         </tbody>
       </table>
@@ -878,7 +904,7 @@
         <li><a href="#s9-1-5">9.1.5 先在 CPU 上算三个点</a></li>
         <li><a href="#s9-2">9.2 法线为什么要 inverse-transpose</a></li>
         <li><a href="#s9-3">9.3 在片元里算 + 布局用 shader-struct</a></li>
-        <li><a href="#s9-4">9.4 属性布局与 uniform 位置：手写版</a></li>
+        <li><a href="#s9-4">9.4 属性布局与 uniform 位置</a></li>
         <li><a href="#s9-code">完整代码</a></li>
         <li><a href="#s9-exercise">试试看</a></li>
         <li><a href="#s9-summary">小结</a></li>

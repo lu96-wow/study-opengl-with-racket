@@ -37,7 +37,7 @@
 
       <div class="run"><span class="prompt">$</span> racket 00-intro/intro.rkt</div>
 
-      <p><b>阅读节奏</b>：02 会先解释 <code>lib/window.rkt</code>，再把 raw OpenGL 的编译/缓冲/VAO 流程走一遍，然后才介绍 <code>build-program</code> / <code>buffer-new</code> 这些便利层；09 会把顶点布局和 uniform 位置的手写方式再展开一次；13 拆开「文字 → 纹理 → 3D quad」，14 再把「文件 → 顶点/索引 → VBO/EBO」走一遍，15 把精灵图、billboard 和 HD 场景组合成一个完整画面。正式章节讲 API 和用例，复习章节（R1–R4）再把 API 与「计算放在哪」重新对齐；R4 会用 CPU 把 14 课的茶壶完整画一遍。便利层只是「少写、防错」，不是 OpenGL 的新规则。</p>
+      <p><b>阅读节奏</b>：02 会先解释 <code>lib/window.rkt</code>，再把 raw OpenGL 的编译/缓冲/VAO 流程走一遍，然后才介绍 <code>build-program</code> / <code>buffer-new</code> 这些便利层；09 会把 gl-vertex-attrib-pointer 的各参数和 uniform 位置的查法讲清；13 拆开「文字 → 纹理 → 3D quad」，14 再把「文件 → 顶点/索引 → VBO/EBO」走一遍，15 把精灵图、billboard 和 HD 场景组合成一个完整画面。正式章节讲 API 和用例，复习章节（R1–R4）再把 API 与「计算放在哪」重新对齐；R4 会用 CPU 把 14 课的茶壶完整画一遍。便利层只是「少写、防错」，不是 OpenGL 的新规则。</p>
 
       <p><b>最短路线</b>：00 → 01 → 02 → 03 → 04 先把 2D 画出来；05 → 06 → 07 进 3D；08 → 09 → 10 → 11 → 12 学光照；13 / 14 / 15 是额外主题；15 是把前面内容拼成一个 HD 场景，可以最后做。每段结束做对应复习（04 后 R1、07 后 R2、11 后 R3、14 后 R4）。</p>
 

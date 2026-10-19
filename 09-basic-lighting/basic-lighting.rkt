@@ -39,8 +39,8 @@
 ;; 光照明亮程度必须逐片元算，这两个量就是它要的输入。
 ;;
 ;; (glsl-shader name form ...) 与 (glsl ...) 一样产出 shader，并额外把编译期接口表
-;; 绑为 name-interface（当前没有宏消费它，留着以后用）。裸等价： (define name (glsl ...))，
-;; 接口只能在运行期用 (shader-program-interface name) 取。
+;; 绑为 name-interface：展开成一张编译期表（每个变量的名字、类型、qualifier、layout），
+;; 供想在展开期读接口的代码使用。裸等价： (define name (glsl ...))，接口只能运行期取。
 (glsl-shader vert-src
   (version 330 core)
   (layout (location 0) in vec-3 pos)       ; 属性名 = CPU 侧 shader-struct 字段名
@@ -112,8 +112,8 @@
 ;;
 ;; shader-struct 把 shader 的 struct 镜像到 CPU 侧：字段名、类型、顺序和 shader 里一致。
 ;; 它顺带给出 stride / 字段偏移（vertex-stride-bytes / vertex-field-offset），
-;; 打包和属性描述都用这两个函数，所以不用数字节——但 location、分量数、GL 类型
-;; 仍然是手写的（见下面 init 里的 gl-vertex-attrib-pointer）。
+;; 打包和属性描述都用这两个函数，所以不用数字节；location、分量数、GL 类型
+;; 要自己写（见下面 init 里的 gl-vertex-attrib-pointer）。
 (shader-struct vertex (vec-3 pos) (vec-3 normal))
 
 (define cube-verts

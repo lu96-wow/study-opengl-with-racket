@@ -163,12 +163,41 @@ void main() {
         <pre><code class="lang-racket">;; 链接后查一次：名字必须是真正的 GLSL 名 u_time
 (define loc (gl-get-uniform-location program "u_time"))
 
+;; t 是要写进 uniform 的值：本课是这一帧的时间（秒）
+(define t (/ (current-inexact-monotonic-milliseconds) 1000.0))
+
 ;; 每帧上传：float 用 gl-uniform-1f；vec3 是 gl-uniform-3f；mat4 是 gl-uniform-matrix-4fv
 (gl-use-program program)          ; uniform 作用在「当前 program」上
-(gl-uniform-1f loc t)</code></pre>
+(gl-uniform-1f loc t)             ; 参数：位置、要写的值</code></pre>
       </div>
 
-      <p>本课从 02 的 raw 流程继续往前走，开始用两个便利层：<code>uniform-location</code> 只是 <code>gl-get-uniform-location</code> 的短名字；<code>uniform-set!</code> 则把「按类型选 <code>gl-uniform-*</code>、拆分量、校验长度」收进一个函数。用之前先知道它们背后是什么。</p>
+      <p><code>gl-uniform-1f</code> 的第二个参数是位置，第三个参数是要写的值——这里 <code>t</code> 就是 shader 里 <code>uniform float u-time</code> 的值，片元用它算亮度脉动：<code>(+ 0.5 (* 0.5 (sin u-time)))</code>。</p>
+
+      <table class="spec">
+        <thead><tr><th>函数</th><th>查什么</th><th>参数</th><th>返回</th></tr></thead>
+        <tbody>
+          <tr><td><code>gl-get-uniform-location</code></td><td>uniform 在 program 里的位置</td><td>program、<b>GLSL 里的名字</b>（<code>u_time</code>，不是 <code>u-time</code>）</td><td>整数；名字不存在或被驱动优化掉时返回 <b>-1</b></td></tr>
+          <tr><td><code>uniform-location</code></td><td>同上，便利层的短名字</td><td>同上</td><td>同上</td></tr>
+        </tbody>
+      </table>
+
+      <p>位置只是「第几号槽」，链接后就不再变，所以查一次存起来。<code>-1</code> 传给 <code>gl-uniform-*</code> 不会报错，只会静默无效——uniform 名字拼错时最难查的一种情况。</p>
+
+      <p><b>类型能查吗？</b>能，但不在 <code>gl-get-uniform-location</code> 里——它只返回位置。类型要从 program 的 active uniform 列表里查：</p>
+
+      <table class="spec">
+        <thead><tr><th>函数</th><th>查什么</th><th>参数</th><th>返回</th></tr></thead>
+        <tbody>
+          <tr><td><code>gl-get-program-iv</code> + <code>gl-active-uniforms</code></td><td>program 里 active uniform 的个数</td><td>program、枚举</td><td>整数（数组只算一项，名字以 <code>[0]</code> 结尾）</td></tr>
+          <tr><td><code>gl-get-active-uniform</code></td><td>第 i 个 uniform 的名字、类型、数组长度</td><td>program、索引（0 .. 个数-1）、名字缓冲大小</td><td>四个值：名字长度、数组大小、<b>类型枚举</b>、名字</td></tr>
+          <tr><td><code>gl-get-uniform-indices</code></td><td>按名字批量换索引</td><td>program、个数、名字向量</td><td><code>u32vector</code>；取不到时是 0xFFFFFFFF</td></tr>
+          <tr><td><code>gl-get-active-uniforms-iv</code></td><td>按索引批量查属性（类型、大小、块索引…）</td><td>program、个数、索引向量、枚举（<code>gl-uniform-type</code>、<code>gl-uniform-size</code>…）</td><td><code>s32vector</code></td></tr>
+        </tbody>
+      </table>
+
+      <p>类型返回的是 GL 枚举，不是 GLSL 类型名：<code>gl-float</code>、<code>gl-float-vec3</code>、<code>gl-float-mat4</code>、<code>gl-int</code>、<code>gl-sampler-2d</code>……本教程不走这条路：shader 是自己写的，类型在编译期就知道，<code>uniform-set!</code> 直接收类型符号（<code>'float</code> / <code>'mat-4</code>）。运行时查类型适合「加载别人写的 shader 字符串、不知道里面有什么」的场景。</p>
+
+      <p>本课的 <code>uniform-set!</code> 把「按类型选 <code>gl-uniform-*</code>、拆分量、校验长度」收进一个函数；用之前先知道它背后是什么。</p>
 
       <p>用 uniform 有三个要点：</p>
 
@@ -289,6 +318,16 @@ void main() {
       </div>
 
       <p><code>(shader-stride-bytes 'vec-2 'vec-3)</code> 把参数里的类型依次加起来：2 + 3 = 5 个 float = 20 字节。<code>(shader-byte-size 'vec-2)</code> 只算一个类型：2 个 float = 8 字节。好处是布局和读数用的是同一份事实——以后把位置换成 <code>vec-3</code>，把两个参数改成 <code>'vec-3 'vec-3</code> 和 <code>'vec-3</code>，步长和偏移自动跟着对，不会出现「改了数据忘了改魔数」造成的整体错位。</p>
+
+      <table class="spec">
+        <thead><tr><th>函数</th><th>输入</th><th>返回</th><th>用途</th></tr></thead>
+        <tbody>
+          <tr><td><code>shader-byte-size</code></td><td>一个类型符号，如 <code>'vec-2</code></td><td>字节数（<code>vec-2</code> → 8）</td><td>单个属性的偏移（把它前面字段的大小加起来）</td></tr>
+          <tr><td><code>shader-stride-bytes</code></td><td>若干类型符号，按布局顺序</td><td>总字节数（<code>'vec-2 'vec-3</code> → 20）</td><td>一个顶点的步长</td></tr>
+        </tbody>
+      </table>
+
+      <p>两个函数都只做「类型 → 字节」的换算，不碰 GL；布局一变，结果跟着变，步长/偏移就不会和数据打包各说各话。</p>
 
       <div class="note key">
         <p><b>关键点</b>已实测 <code>(shader-stride-bytes 'vec-2 'vec-3)</code> 得到 20、<code>(shader-byte-size 'vec-2)</code> 得到 8，和手写字面量结果相同。用函数算不是为了省打字，是为了让步长、偏移和布局描述不会各说各话。</p>
